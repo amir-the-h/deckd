@@ -1,0 +1,35 @@
+{
+  "UUID": "__UUID__",
+  "Name": "__NAME__",
+  "Version": "0.1.0",
+  "Author": "__AUTHOR__",
+  "Description": "__NAME__ for deckd / Stream Deck",
+  "Icon": "imgs/plugin",
+  "Category": "__NAME__",
+  "CategoryIcon": "imgs/plugin",
+  "CodePath": "plugin.js",
+  "Nodejs": { "Version": "22" },
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.4" },
+  "OS": [
+    { "Platform": "linux", "MinimumVersion": "5.0" },
+    { "Platform": "windows", "MinimumVersion": "10" },
+    { "Platform": "mac", "MinimumVersion": "12" }
+  ],
+  "Actions": [
+    {
+      "UUID": "__UUID__.counter",
+      "Name": "Counter",
+      "Tooltip": "Press to count; on a dial, turn to step and push to reset",
+      "Icon": "imgs/action",
+      "Controllers": ["Keypad", "Encoder"],
+      "PropertyInspectorPath": "pi/index.html",
+      "States": [{ "Image": "imgs/key", "TitleAlignment": "bottom", "ShowTitle": true }],
+      "Encoder": {
+        "layout": "$A1",
+        "Icon": "imgs/action",
+        "TriggerDescription": { "Rotate": "Step", "Push": "Reset", "Touch": "Reset" }
+      }
+    }
+  ]
+}

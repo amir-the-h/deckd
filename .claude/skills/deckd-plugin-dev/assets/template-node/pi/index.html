@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 12px; background: #2d2d2d; color: #d8d8d8; font: 13px system-ui, sans-serif; }
+  label { display: grid; grid-template-columns: 80px 1fr; align-items: center; gap: 8px; margin-bottom: 8px; }
+  input { background: #3d3d3d; border: 1px solid #555; color: inherit; border-radius: 4px; padding: 4px 6px; }
+  button { background: #3d3d3d; border: 1px solid #555; color: inherit; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  .note { color: #8a8a8a; font-size: 12px; }
+</style>
+</head>
+<body>
+  <label>Label <input id="label" placeholder="shown under the number"></label>
+  <label>Step <input id="step" type="number" min="1" value="1"></label>
+  <button id="reset">Reset count</button>
+  <p class="note" id="note"></p>
+
+<script>
+// The host loads this page and calls connectElgatoStreamDeckSocket(...) once it has loaded.
+let ws, context, settings = {};
+const $ = (id) => document.getElementById(id);
+const send = (msg) => ws && ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
+
+function connectElgatoStreamDeckSocket(port, uuid, registerEvent, infoJson, actionInfoJson) {
+  context = uuid; // for property inspectors the uuid is the action's context
+  settings = JSON.parse(actionInfoJson).payload.settings || {};
+  render();
+  ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  ws.onopen = () => send({ event: registerEvent, uuid });
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg.event === "didReceiveSettings") { settings = msg.payload.settings || {}; render(); }
+    if (msg.event === "sendToPropertyInspector") $("note").textContent = `Plugin says: ${JSON.stringify(msg.payload)}`;
+  };
+}
+
+function render() {
+  $("label").value = settings.label || "";
+  $("step").value = settings.step || 1;
+}
+
+function saveSettings() {
+  settings = { ...settings, label: $("label").value, step: Math.max(1, Number($("step").value) || 1) };
+  send({ event: "setSettings", context, payload: settings });
+}
+
+$("label").addEventListener("input", saveSettings);
+$("step").addEventListener("input", saveSettings);
+$("reset").addEventListener("click", () => send({ event: "sendToPlugin", context, payload: { command: "reset" } }));
+</script>
+</body>
+</html>
