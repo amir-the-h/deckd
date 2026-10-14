@@ -151,6 +151,42 @@ impl Renderer {
         DynamicImage::ImageRgba8(canvas)
     }
 
+    /// Analog clock face. Drawn fresh each time, without touching the image cache.
+    pub fn render_analog_clock(&self, w: u32, h: u32, hour: u32, minute: u32, second: u32, background: Option<&str>) -> DynamicImage {
+        let bg = background.and_then(parse_color).unwrap_or(Rgba([0, 0, 0, 255]));
+        let mut canvas = RgbaImage::from_pixel(w, h, bg);
+        let side = w.min(h);
+        let (cx, cy, r) = (50.0, 50.0, 46.0);
+        let mut ticks = String::new();
+        for i in 0..12 {
+            let a = i as f32 * std::f32::consts::PI / 6.0;
+            let (inner, width) = if i % 3 == 0 { (r - 10.0, 3.5) } else { (r - 6.0, 2.0) };
+            ticks += &format!(
+                r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="#cfcfcf" stroke-width="{width}" stroke-linecap="round"/>"##,
+                cx + inner * a.sin(), cy - inner * a.cos(), cx + (r - 2.0) * a.sin(), cy - (r - 2.0) * a.cos()
+            );
+        }
+        let hand = |angle: f32, len: f32, width: f32, color: &str| {
+            format!(
+                r#"<line x1="{cx}" y1="{cy}" x2="{:.2}" y2="{:.2}" stroke="{color}" stroke-width="{width}" stroke-linecap="round"/>"#,
+                cx + len * angle.sin(), cy - len * angle.cos()
+            )
+        };
+        let tau = std::f32::consts::TAU;
+        let m = minute as f32 + second as f32 / 60.0;
+        let hr = (hour % 12) as f32 + m / 60.0;
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="{r}" fill="#151515" stroke="#3a3a3a" stroke-width="2"/>{ticks}{}{}{}<circle cx="50" cy="50" r="3.5" fill="#f7821b"/></svg>"##,
+            hand(hr / 12.0 * tau, 24.0, 5.0, "#ffffff"),
+            hand(m / 60.0 * tau, 36.0, 3.5, "#ffffff"),
+            hand(second as f32 / 60.0 * tau, 38.0, 1.5, "#f7821b"),
+        );
+        if let Ok(face) = render_svg_uncached(&svg, side) {
+            imageops::overlay(&mut canvas, &face, ((w - face.width()) / 2) as i64, ((h - face.height()) / 2) as i64);
+        }
+        DynamicImage::ImageRgba8(canvas)
+    }
+
     /// Native volume dial: icon left, name over percentage right, bar along the bottom.
     pub fn render_volume(&self, w: u32, h: u32, icon: &str, name: &str, percent: Option<u32>, muted: bool, flash: Option<Flash>) -> DynamicImage {
         use imageproc::drawing::{draw_filled_rect_mut, draw_line_segment_mut};
@@ -449,6 +485,10 @@ fn svg_options() -> &'static resvg::usvg::Options<'static> {
         opts.font_family = "Noto Sans".into();
         opts
     })
+}
+
+fn render_svg_uncached(svg: &str, size: u32) -> anyhow::Result<RgbaImage> {
+    decode_image(&format!("data:image/svg+xml,{svg}"), size, size)
 }
 
 fn decode_image(src: &str, w: u32, h: u32) -> anyhow::Result<RgbaImage> {

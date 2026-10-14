@@ -10,6 +10,10 @@ pub const BRIGHTNESS: &str = "deckd.brightness";
 pub const VOLUME: &str = "deckd.volume";
 /// Hyprland screen shaders; also handled by the device actor.
 pub const SHADER: &str = "deckd.shader";
+/// Live built-ins drawn by the device actor.
+pub const CLOCK: &str = "deckd.clock";
+pub const MANGOHUD: &str = "deckd.mangohud";
+pub const MEDIA: &str = "deckd.media";
 
 pub fn is_builtin(uuid: &str) -> bool {
     uuid.starts_with("deckd.")

@@ -175,6 +175,13 @@ fn builtins() -> Vec<Value> {
                 "icon": icon("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm1-13h-2v6l5.2 3.2 1-1.6-4.2-2.5z") }),
         json!({ "uuid": "deckd.shader", "name": "Hyprland Shader", "tooltip": "Cycle or toggle Hyprland screen shaders", "keypad": true, "encoder": true,
                 "icon": icon("M12 3a9 9 0 1 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z") }),
+        json!({ "uuid": "deckd.clock", "name": "Clock", "tooltip": "Time or date, digital or analog", "keypad": true, "encoder": true,
+                "icon": icon("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7z") }),
+        json!({ "uuid": "deckd.media", "name": "Now Playing", "tooltip": "Track, artist and cover art; press to play/pause, turn to skip", "keypad": true, "encoder": true,
+                "icon": icon("M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z") }),
+        json!({ "uuid": "deckd.mangohud", "name": "MangoHud", "tooltip": "Toggle the HUD or show a live game stat", "keypad": true, "encoder": true,
+                "fields": crate::widgets::MANGO_FIELDS,
+                "icon": icon("M21 6H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h18a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1zM10 13H8v2H6v-2H4v-2h2V9h2v2h2v2zm4.5 2a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-3a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z") }),
         json!({ "uuid": "deckd.brightness", "name": "Brightness", "tooltip": "Change the deck's brightness", "keypad": true, "encoder": true,
                 "icon": icon("M20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12 20 8.69zM12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12z") }),
     ]

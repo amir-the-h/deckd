@@ -625,6 +625,17 @@ function settingInput(a, key, attrs = {}) {
   return input;
 }
 
+function settingCheckbox(a, key, label, def) {
+  const box = el("input", { type: "checkbox", checked: (a.settings?.[key] ?? def) ? true : undefined });
+  box.addEventListener("change", () => {
+    const act = curAction();
+    act.settings ||= {};
+    act.settings[key] = box.checked;
+    savePage().then(() => refreshSlot(S.sel));
+  });
+  return el("label", { class: "row", style: "justify-content:flex-start;gap:8px" }, box, el("span", { style: "flex:none" }, label));
+}
+
 function settingSelect(a, key, options, onChange) {
   const sel = el("select", {}, options.map(([v, label]) => el("option", { value: v }, label)));
   sel.value = a.settings?.[key] ?? options[0][0];
@@ -664,6 +675,29 @@ function renderSettings(box, keepPI) {
     renderVolumeSettings(box, a);
   } else if (a.uuid === "deckd.shader") {
     renderShaderSettings(box, a);
+  } else if (a.uuid === "deckd.clock") {
+    const analog = a.settings?.style === "analog";
+    box.append(field("Style", settingSelect(a, "style", [["digital", "Digital"], ["analog", "Analog"]], () => { renderInspector(); refreshSlot(S.sel); })));
+    if (!analog) {
+      box.append(field("Format", settingInput(a, "format", { placeholder: "%H:%M" })));
+      box.append(el("p", { class: "muted" }, "strftime codes: %H:%M → 14:05 · %I:%M %p → 02:05 PM · %d / %m → 15 / 10 · %a %d %b → Thu 15 Oct · \n for a new line. Style the text with the Center label in Appearance."));
+    }
+  } else if (a.uuid === "deckd.media") {
+    box.append(field("Player", settingInput(a, "player", { placeholder: "Any player (or e.g. spotify, chromium, firefox)" })));
+    box.append(settingCheckbox(a, "art", "Show cover art", true));
+    box.append(settingCheckbox(a, "title", "Show the track title", true));
+    box.append(el("p", { class: "muted" }, "Press or tap to play/pause. On a dial, turn to skip tracks."));
+  } else if (a.uuid === "deckd.mangohud") {
+    const stat = a.settings?.mode !== "toggle";
+    box.append(field("Mode", settingSelect(a, "mode", [["stat", "Show a live stat"], ["toggle", "Toggle the HUD"]], () => { renderInspector(); refreshSlot(S.sel); })));
+    if (stat) {
+      const fields = (actionMeta("deckd.mangohud").fields || ["fps"]).map((f) => [f, f.replace(/_/g, " ")]);
+      const positions = [["top", "Top"], ["center", "Middle"], ["bottom", "Bottom"]];
+      box.append(field("Stat", settingSelect(a, "field", fields)));
+      box.append(el("div", { class: "row" }, field("Label", settingInput(a, "label", { placeholder: "e.g. FPS" })), field("Label at", settingSelect(a, "label_pos", positions))));
+      box.append(field("Value at", settingSelect(a, "stat_pos", [["center", "Middle"], ["top", "Top"], ["bottom", "Bottom"]])));
+    }
+    box.append(el("p", { class: "muted" }, "Needs MangoHud's control socket and logging enabled in MangoHud.conf (control=…/scmango-%p, output_folder=/tmp/sc_mangohud, autostart_log=1)."));
   } else if (meta.inspector) {
     const holder = el("div");
     box.append(holder);

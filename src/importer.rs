@@ -242,6 +242,32 @@ fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {
         "com_the_h_ElgatoKeyLight::ToggleLight" => ("me.the-h.utilities.elgato-toggle", json!({}), vec![]),
         "com_the_h_ElgatoKeyLight::SetBrightness" => ("me.the-h.utilities.elgato-brightness", json!({}), vec![]),
         "com_the_h_ElgatoKeyLight::SetTemperature" => ("me.the-h.utilities.elgato-temperature", json!({}), vec![]),
+        // Clocks, MangoHud and now-playing are built-ins.
+        "com_core447_Clocks::Date" => (actions::CLOCK, json!({ "style": "digital", "format": s("key") }), vec![]),
+        "com_core447_Clocks::DigitalClock" => (actions::CLOCK, json!({ "style": "digital" }), vec![]),
+        "com_core447_Clocks::AnalogClock" => (actions::CLOCK, json!({ "style": "analog" }), vec![]),
+        "dev_eumario_MangoHud::ToggleHud" => (actions::MANGOHUD, json!({ "mode": "toggle" }), vec![]),
+        "dev_eumario_MangoHud::ItemDisplay" => {
+            let pos = |k: &str| match settings.get(k).and_then(Value::as_u64) {
+                Some(0) => "top",
+                Some(2) => "bottom",
+                _ => "center",
+            };
+            (
+                actions::MANGOHUD,
+                json!({ "mode": "stat", "field": s("field"), "label": s("label_text"), "label_pos": pos("label_loc"), "stat_pos": pos("stat_loc") }),
+                vec![],
+            )
+        }
+        "com_core447_MediaPlugin::Info" => {
+            // Chrome registers on MPRIS as "chromium".
+            let player = match s("player_name").to_lowercase().as_str() {
+                "chrome" | "google chrome" => "chromium".to_string(),
+                p => p.to_string(),
+            };
+            let flag = |k: &str| settings.get(k).and_then(Value::as_bool).unwrap_or(true);
+            (actions::MEDIA, json!({ "player": player, "art": flag("show_thumbnail"), "title": flag("show_label") }), vec![])
+        }
         // Hyprland shaders are a built-in now.
         "com_amir_HyprShader::ShaderDial" => (actions::SHADER, json!({ "mode": "dial", "index": settings.get("dial_index").cloned().unwrap_or(json!(0)) }), vec![]),
         "com_amir_HyprShader::AnimatedShaderDial" => {

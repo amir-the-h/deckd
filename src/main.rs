@@ -13,6 +13,7 @@ mod render;
 mod server;
 mod shader;
 mod usbreset;
+mod widgets;
 
 use std::sync::Arc;
 

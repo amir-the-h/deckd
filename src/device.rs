@@ -36,6 +36,7 @@ enum Event {
     HoldTimer(InputId, u64),
     Redraw(String),
     ShaderActive(String),
+    Media(String, Option<crate::widgets::Media>),
     Disconnected,
 }
 
@@ -82,6 +83,11 @@ pub struct DeckActor {
     dirty: HashSet<InputId>,
     /// Active Hyprland screen shader, once known.
     shader_active: Option<String>,
+    /// Latest MangoHud stats (None when no game is running).
+    mango: Option<HashMap<String, f64>>,
+    /// Now-playing info by player filter.
+    media: HashMap<String, Option<crate::widgets::Media>>,
+    ticks: u64,
     tx: mpsc::UnboundedSender<Event>,
 }
 
@@ -175,6 +181,9 @@ impl DeckActor {
             live: HashMap::new(),
             dirty: HashSet::new(),
             shader_active: None,
+            mango: None,
+            media: HashMap::new(),
+            ticks: 0,
             tx,
         };
         actor.rebuild_index();
@@ -184,9 +193,13 @@ impl DeckActor {
 
         // Shader state can change outside deckd; re-check while a shader action is visible.
         let mut shader_poll = tokio::time::interval(Duration::from_secs(4));
+        // Clocks, game stats and now-playing update once a second, only while visible.
+        let mut live_tick = tokio::time::interval(Duration::from_secs(1));
+        live_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = shader_poll.tick() => if actor.page_has(actions::SHADER) { actor.refresh_shader() },
+                _ = live_tick.tick() => actor.tick_live(),
                 ev = rx.recv() => match ev {
                     Some(Event::Disconnected) | None => break,
                     Some(ev) => actor.on_event(ev).await,
@@ -250,6 +263,12 @@ impl DeckActor {
                 }
                 self.mark_ctx(&ctx);
             }
+            Event::Media(filter, info) => {
+                if self.media.get(&filter) != Some(&info) {
+                    self.media.insert(filter, info);
+                    self.mark_uuid(actions::MEDIA);
+                }
+            }
             Event::ShaderActive(path) => {
                 if self.shader_active.as_deref() != Some(path.as_str()) {
                     self.shader_active = Some(path);
@@ -257,6 +276,179 @@ impl DeckActor {
                 }
             }
             Event::Disconnected => {}
+        }
+    }
+
+    fn tick_live(&mut self) {
+        self.ticks += 1;
+        if self.page_has(actions::CLOCK) {
+            self.mark_uuid(actions::CLOCK);
+        }
+        if self.page_has(actions::MANGOHUD) {
+            let stats = crate::widgets::mango_stats();
+            if stats != self.mango {
+                self.mango = stats;
+                self.mark_uuid(actions::MANGOHUD);
+            }
+        }
+        if self.ticks % 2 == 1 {
+            for filter in self.media_filters() {
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let info = crate::widgets::media(&filter).await;
+                    let _ = tx.send(Event::Media(filter, info));
+                });
+            }
+        }
+    }
+
+    /// Player filters used by now-playing actions on the visible page.
+    fn media_filters(&self) -> Vec<String> {
+        let Some(p) = self.cfg.pages.get(&self.current) else { return vec![] };
+        let mut v: Vec<String> = p
+            .keys
+            .values()
+            .chain(p.dials.values())
+            .flat_map(|s| s.actions.iter())
+            .filter(|a| a.uuid == actions::MEDIA)
+            .map(|a| a.settings.get("player").and_then(Value::as_str).unwrap_or_default().to_string())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// Input handling for the live built-ins.
+    fn widget_fire(&self, a: &ActionInstance, fire: Fire) {
+        match a.uuid.as_str() {
+            actions::MANGOHUD if matches!(fire, Fire::Press | Fire::Touch | Fire::LongTouch) => {
+                tokio::task::spawn_blocking(|| {
+                    if crate::widgets::mango_toggle_hud() == 0 {
+                        tracing::info!("mangohud: no running game with a control socket");
+                    }
+                });
+            }
+            actions::MEDIA => {
+                let filter = a.settings.get("player").and_then(Value::as_str).unwrap_or_default();
+                let Some(Some(m)) = self.media.get(filter) else { return };
+                let method = match fire {
+                    Fire::Rotate(t) if t > 0 => "Next",
+                    Fire::Rotate(_) => "Previous",
+                    _ => "PlayPause",
+                };
+                crate::widgets::media_call(&m.bus, method);
+                let tx = self.tx.clone();
+                let filter = filter.to_string();
+                // Pick up the new state quickly rather than on the next poll.
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let info = crate::widgets::media(&filter).await;
+                    let _ = tx.send(Event::Media(filter, info));
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// The picture for a live built-in.
+    fn render_widget(&self, a: &ActionInstance, input: InputId) -> Option<DynamicImage> {
+        let s = |k: &str| a.settings.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        let user = a.current_state().cloned().unwrap_or_default();
+        let key_size = self.kind.key_image_format().size.0 as u32;
+        let (seg_w, seg_h) = match self.kind.lcd_strip_size() {
+            Some((w, h)) => ((w / self.kind.encoder_count().max(1) as usize) as u32, h as u32),
+            None => (0, 0),
+        };
+        let draw = |st: &State| match input {
+            InputId::Key(_) => Some(self.renderer.render_key(key_size, Some(st), None)),
+            InputId::Dial(_) => (seg_w > 0).then(|| self.renderer.render_dial(seg_w, seg_h, Some(st))),
+        };
+        let pos = |k: &str, default: LabelPos| match s(k).as_str() {
+            "top" => LabelPos::Top,
+            "center" => LabelPos::Center,
+            "bottom" => LabelPos::Bottom,
+            _ => default,
+        };
+        // Users can still style the widget's main text through the matching label.
+        let styled = |p: LabelPos, text: String, size: f32, color: &str| {
+            let u = user.labels.get(&p);
+            Label {
+                text,
+                size: u.and_then(|l| l.size).or(Some(size)),
+                color: u.and_then(|l| l.color.clone()).or(Some(color.to_string())),
+            }
+        };
+
+        match a.uuid.as_str() {
+            actions::CLOCK => {
+                use chrono::Timelike;
+                let now = chrono::Local::now();
+                if s("style") == "analog" {
+                    let (w, h) = if matches!(input, InputId::Key(_)) { (key_size, key_size) } else { (seg_w, seg_h) };
+                    return (w > 0).then(|| self.renderer.render_analog_clock(w, h, now.hour(), now.minute(), now.second(), user.background.as_deref()));
+                }
+                let fmt = if s("format").is_empty() { "%H:%M".to_string() } else { s("format") };
+                // Reject formats chrono can't handle instead of panicking mid-render.
+                let mut text = String::new();
+                if std::fmt::Write::write_fmt(&mut text, format_args!("{}", now.format(&fmt))).is_err() {
+                    text = "bad format".into();
+                }
+                let mut st = State { image: user.image.clone(), background: user.background.clone(), ..Default::default() };
+                st.labels.insert(LabelPos::Center, styled(LabelPos::Center, text, 20.0, "#ffffff"));
+                for (p, l) in &user.labels {
+                    if *p != LabelPos::Center {
+                        st.labels.insert(*p, l.clone());
+                    }
+                }
+                draw(&st)
+            }
+            actions::MANGOHUD => {
+                let mut st = State { image: user.image.clone(), background: user.background.clone(), ..Default::default() };
+                if s("mode") == "toggle" {
+                    st.labels = user.labels.clone();
+                    if st.image.is_none() && st.labels.is_empty() {
+                        st.labels.insert(LabelPos::Center, Label { text: "HUD".into(), size: Some(22.0), color: None });
+                        st.labels.insert(LabelPos::Bottom, Label { text: "MangoHud".into(), size: Some(11.0), color: Some("#8a8a8a".into()) });
+                    }
+                    return draw(&st);
+                }
+                let field = if s("field").is_empty() { "fps".to_string() } else { s("field") };
+                let label = if s("label").is_empty() { field.to_uppercase().replace('_', " ") } else { s("label") };
+                let value = self.mango.as_ref().and_then(|m| m.get(&field)).map(|v| crate::widgets::mango_format(&field, *v)).unwrap_or_else(|| "—".into());
+                let (lp, vp) = (pos("label_pos", LabelPos::Top), pos("stat_pos", LabelPos::Center));
+                st.labels.insert(lp, styled(lp, label, 13.0, "#9a9a9a"));
+                st.labels.insert(vp, styled(vp, value, 24.0, "#ffffff"));
+                draw(&st)
+            }
+            actions::MEDIA => {
+                let info = self.media.get(&s("player")).cloned().flatten();
+                let show_art = a.settings.get("art").and_then(Value::as_bool).unwrap_or(true);
+                let show_title = a.settings.get("title").and_then(Value::as_bool).unwrap_or(true);
+                let mut st = State { image: user.image.clone(), background: user.background.clone(), ..Default::default() };
+                match info {
+                    None => {
+                        st.labels.insert(LabelPos::Center, Label { text: "No media".into(), size: Some(12.0), color: Some("#8a8a8a".into()) });
+                    }
+                    Some(m) => {
+                        if show_art && st.image.is_none() {
+                            st.image = m.art.clone();
+                        }
+                        let dial = matches!(input, InputId::Dial(_));
+                        if show_title && !m.title.is_empty() {
+                            let title: String = m.title.chars().take(if dial { 28 } else { 18 }).collect();
+                            st.labels.insert(if dial { LabelPos::Top } else { LabelPos::Bottom }, Label { text: title, size: Some(if dial { 11.0 } else { 10.0 }), color: None });
+                        }
+                        if dial && !m.artist.is_empty() {
+                            st.labels.insert(LabelPos::Center, Label { text: m.artist.chars().take(28).collect(), size: Some(10.0), color: Some("#b0b0b0".into()) });
+                        }
+                        if !m.playing {
+                            st.labels.insert(if dial { LabelPos::Bottom } else { LabelPos::Top }, Label { text: "Paused".into(), size: Some(9.0), color: Some("#f7821b".into()) });
+                        }
+                    }
+                }
+                draw(&st)
+            }
+            _ => None,
         }
     }
 
@@ -440,6 +632,8 @@ impl DeckActor {
                 self.volume_fire(action, fire);
             } else if action.uuid == actions::SHADER {
                 effects.extend(self.shader_fire(action, fire));
+            } else if matches!(action.uuid.as_str(), actions::MANGOHUD | actions::MEDIA | actions::CLOCK) {
+                self.widget_fire(action, fire);
             } else if actions::is_builtin(&action.uuid) {
                 if let Some(e) = actions::run(&action.uuid, &action.settings, fire) {
                     effects.push(e);
@@ -926,6 +1120,8 @@ impl DeckActor {
         if self.page_has(actions::SHADER) {
             self.refresh_shader();
         }
+        self.ticks = 0;
+        self.tick_live();
         let page_brightness = self.cfg.pages.get(&self.current).and_then(|p| p.brightness);
         let _ = self.deck.set_brightness(page_brightness.unwrap_or(self.brightness)).await;
         for k in 0..self.kind.key_count() {
@@ -1071,6 +1267,9 @@ impl DeckActor {
     /// Renders one slot of any page as it would appear on the device.
     fn render(&self, page: &str, input: InputId) -> Option<DynamicImage> {
         let action = self.slot(page, input).and_then(Slot::display_action);
+        if let Some(a) = action.filter(|a| matches!(a.uuid.as_str(), actions::CLOCK | actions::MANGOHUD | actions::MEDIA)) {
+            return self.render_widget(a, input);
+        }
         if let Some(a) = action.filter(|a| a.uuid == actions::SHADER) {
             let mut st = self.shader_view(a);
             // A user-chosen icon or background still applies.
