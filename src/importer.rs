@@ -242,6 +242,12 @@ fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {
         "com_the_h_ElgatoKeyLight::ToggleLight" => ("me.the-h.utilities.elgato-toggle", json!({}), vec![]),
         "com_the_h_ElgatoKeyLight::SetBrightness" => ("me.the-h.utilities.elgato-brightness", json!({}), vec![]),
         "com_the_h_ElgatoKeyLight::SetTemperature" => ("me.the-h.utilities.elgato-temperature", json!({}), vec![]),
+        // Hyprland shaders are a built-in now.
+        "com_amir_HyprShader::ShaderDial" => (actions::SHADER, json!({ "mode": "dial", "index": settings.get("dial_index").cloned().unwrap_or(json!(0)) }), vec![]),
+        "com_amir_HyprShader::AnimatedShaderDial" => {
+            (actions::SHADER, json!({ "mode": "dial", "folder": "animated", "index": settings.get("dial_index").cloned().unwrap_or(json!(0)) }), vec![])
+        }
+        "com_amir_HyprShader::ToggleShader" => (actions::SHADER, json!({ "mode": "toggle", "shader": s("shader_path") }), vec![]),
         // OBS via Multi OBS Controller, which talks to OBS's built-in obs-websocket.
         "com_oparada1988_OBS_Plus::SwitchScene" => ("dev.theca11.multiobs.setscene", json!({ "params1": { "sceneName": s("scene") } }), vec![]),
         "com_oparada1988_OBS_Plus::ToggleRecord" => ("dev.theca11.multiobs.togglerecord", json!({}), vec![]),

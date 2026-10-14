@@ -8,6 +8,8 @@ pub const DIAL: &str = "deckd.dial";
 pub const BRIGHTNESS: &str = "deckd.brightness";
 /// Handled by the device actor, which owns the audio state.
 pub const VOLUME: &str = "deckd.volume";
+/// Hyprland screen shaders; also handled by the device actor.
+pub const SHADER: &str = "deckd.shader";
 
 pub fn is_builtin(uuid: &str) -> bool {
     uuid.starts_with("deckd.")
@@ -19,6 +21,10 @@ pub enum Effect {
     SwitchPage(String),
     Back,
     Brightness { delta: i32 },
+    /// Select the shader at `index` on a cycling shader dial.
+    ShaderIndex { context: String, index: usize },
+    /// Turn this shader on, or off if it's the active one.
+    ShaderToggle(String),
 }
 
 /// What happened to the input the action is bound to.

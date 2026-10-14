@@ -11,6 +11,7 @@ mod layout;
 mod plugins;
 mod render;
 mod server;
+mod shader;
 mod usbreset;
 
 use std::sync::Arc;

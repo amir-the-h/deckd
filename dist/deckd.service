@@ -1,0 +1,14 @@
+[Unit]
+Description=deckd Stream Deck daemon
+Documentation=http://127.0.0.1:28196
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/deckd
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=deckd=info
+
+[Install]
+WantedBy=graphical-session.target

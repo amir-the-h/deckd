@@ -662,6 +662,8 @@ function renderSettings(box, keepPI) {
     box.append(el("p", { class: "muted" }, "On a dial, turning adjusts brightness."));
   } else if (a.uuid === "deckd.volume") {
     renderVolumeSettings(box, a);
+  } else if (a.uuid === "deckd.shader") {
+    renderShaderSettings(box, a);
   } else if (meta.inspector) {
     const holder = el("div");
     box.append(holder);
@@ -680,6 +682,20 @@ function renderSettings(box, keepPI) {
       } catch { toast("Settings must be valid JSON", true); }
     });
     box.append(el("details", { class: "raw" }, el("summary", {}, "Raw settings (JSON)"), ta));
+  }
+}
+
+async function renderShaderSettings(box, a) {
+  const mode = a.settings?.mode === "toggle" ? "toggle" : "dial";
+  const folder = a.settings?.folder || "";
+  box.append(field("Mode", settingSelect(a, "mode", [["dial", "Cycle — turn to pick, push to toggle"], ["toggle", "One shader — press to toggle"]], () => renderInspector())));
+  box.append(field("Shaders from", settingSelect(a, "folder", [["", "~/.config/hypr/shaders"], ["animated", "~/.config/hypr/shaders/animated"]], () => renderInspector())));
+  if (mode === "toggle") {
+    let shaders = [];
+    try { shaders = await api("GET", `/api/shaders?folder=${encodeURIComponent(folder)}`); } catch {}
+    box.append(field("Shader", settingSelect(a, "shader", [["", "Choose a shader…"], ...shaders.map((x) => [x.path, x.name])])));
+  } else {
+    box.append(el("p", { class: "muted" }, "Turning the dial picks a shader; pushing it (or tapping the strip) turns it on or off."));
   }
 }
 

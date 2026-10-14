@@ -42,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/plugins", get(list_plugins).post(install_plugin).layer(axum::extract::DefaultBodyLimit::max(512 << 20)))
         .route("/api/plugins/{uuid}", axum::routing::delete(uninstall_plugin))
         .route("/api/audio", get(audio_devices))
+        .route("/api/shaders", get(list_shaders))
         .route("/api/icons", get(list_icons).post(upload_icon).layer(axum::extract::DefaultBodyLimit::max(8 << 20)))
         .route("/api/events", get(events))
         .route("/api/iconsets", get(list_iconsets))
@@ -172,6 +173,8 @@ fn builtins() -> Vec<Value> {
                 "icon": svg(icons::SPEAKER) }),
         json!({ "uuid": "deckd.dial", "name": "Dial Commands", "tooltip": "Run commands when a dial is turned, pushed or touched", "keypad": false, "encoder": true,
                 "icon": icon("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm1-13h-2v6l5.2 3.2 1-1.6-4.2-2.5z") }),
+        json!({ "uuid": "deckd.shader", "name": "Hyprland Shader", "tooltip": "Cycle or toggle Hyprland screen shaders", "keypad": true, "encoder": true,
+                "icon": icon("M12 3a9 9 0 1 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z") }),
         json!({ "uuid": "deckd.brightness", "name": "Brightness", "tooltip": "Change the deck's brightness", "keypad": true, "encoder": true,
                 "icon": icon("M20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12 20 8.69zM12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12z") }),
     ]
@@ -326,6 +329,17 @@ struct GlyphQuery {
 async fn glyph(Query(q): Query<GlyphQuery>) -> ApiResult<Response> {
     let svg = tokio::task::spawn_blocking(move || crate::icons::resolve_ref(&q.icon)).await.ok().flatten().ok_or_else(|| not_found("icon"))?;
     Ok(([(header::CONTENT_TYPE, "image/svg+xml")], svg).into_response())
+}
+
+#[derive(Deserialize)]
+struct ShaderQuery {
+    #[serde(default)]
+    folder: String,
+}
+
+async fn list_shaders(Query(q): Query<ShaderQuery>) -> Json<Value> {
+    let list: Vec<Value> = crate::shader::list(&q.folder).into_iter().map(|(name, path)| json!({ "name": name, "path": path })).collect();
+    Json(json!(list))
 }
 
 async fn audio_devices(State(s): State<AppState>) -> Json<Value> {
