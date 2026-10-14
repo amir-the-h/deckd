@@ -47,6 +47,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="library">Actions</button>
       <button class="tab" data-tab="inspector">Inspector</button>
+      <button class="tab" data-tab="plugins">Plugins</button>
     </div>
     <div id="tab-library" class="tab-body">
       <input id="search" class="search" type="search" placeholder="Search actions">
@@ -54,6 +55,16 @@
     </div>
     <div id="tab-inspector" class="tab-body hidden">
       <div id="inspector" class="inspector"><p class="empty">Select a key or dial.</p></div>
+    </div>
+    <div id="tab-plugins" class="tab-body hidden">
+      <div class="section">
+        <div class="row">
+          <button id="plugin-install" class="btn primary">Install plugin or icon pack…</button>
+        </div>
+        <p class="muted">Accepts .streamDeckPlugin and .streamDeckIconPack files, e.g. downloaded from the Elgato Marketplace.</p>
+        <input id="plugin-file" type="file" accept=".streamDeckPlugin,.streamDeckIconPack,.zip" class="hidden">
+      </div>
+      <div id="plugin-list" class="stack"></div>
     </div>
   </aside>
 </main>
@@ -67,6 +78,25 @@
       <button type="submit" class="btn primary">OK</button>
     </div>
   </form>
+</div>
+<div id="picker" class="modal hidden">
+  <div class="picker-card">
+    <div class="picker-head">
+      <h3>Choose an icon</h3>
+      <input id="picker-search" type="search" placeholder="Search icons, e.g. volume, mic, discord">
+      <label class="row picker-opt" title="Icon colour">Colour <input id="picker-color" type="color" value="#ffffff"></label>
+      <label class="row picker-opt" title="How much of the key the icon fills">Size <input id="picker-scale" type="range" min="30" max="100" value="60"></label>
+      <button id="picker-close" class="btn">Close</button>
+    </div>
+    <div class="picker-body">
+      <nav id="picker-sources" class="picker-sources"></nav>
+      <div id="picker-results" class="picker-results"></div>
+    </div>
+    <div class="picker-foot">
+      <span class="muted" id="picker-note"></span>
+      <button id="picker-restyle" class="btn small" title="Give every library icon on this page the colour and size above">Apply colour &amp; size to all library icons on this page</button>
+    </div>
+  </div>
 </div>
 <div id="toast" class="toast hidden"></div>
 

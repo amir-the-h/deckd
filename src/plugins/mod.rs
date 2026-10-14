@@ -55,11 +55,35 @@ struct Inner {
     contexts: HashMap<String, (String, String)>,
     decks: HashMap<String, DeckEntry>,
     inspectors: HashMap<String, mpsc::UnboundedSender<String>>,
+    stops: HashMap<String, Arc<tokio::sync::Notify>>,
+}
+
+/// Installed plugins and their actions. Swapped under a lock when plugins are
+/// installed or removed at runtime.
+#[derive(Default)]
+struct Catalog {
+    plugins: BTreeMap<String, Arc<PluginInfo>>,
+    actions: HashMap<String, Arc<ActionInfo>>,
+}
+
+impl Catalog {
+    fn insert(&mut self, p: PluginInfo) {
+        self.remove(&p.uuid);
+        for a in &p.actions {
+            self.actions.insert(a.uuid.clone(), Arc::new(a.clone()));
+        }
+        self.plugins.insert(p.uuid.clone(), Arc::new(p));
+    }
+
+    fn remove(&mut self, uuid: &str) -> Option<Arc<PluginInfo>> {
+        let p = self.plugins.remove(uuid)?;
+        self.actions.retain(|_, a| a.plugin != uuid);
+        Some(p)
+    }
 }
 
 pub struct Host {
-    pub plugins: BTreeMap<String, PluginInfo>,
-    actions: HashMap<String, ActionInfo>,
+    catalog: std::sync::RwLock<Catalog>,
     port: u16,
     node: Option<PathBuf>,
     inner: Mutex<Inner>,
@@ -75,8 +99,7 @@ fn data_dir() -> PathBuf {
 
 impl Host {
     pub fn load(port: u16) -> Arc<Host> {
-        let mut plugins = BTreeMap::new();
-        let mut actions = HashMap::new();
+        let mut catalog = Catalog::default();
         if let Ok(entries) = std::fs::read_dir(plugins_dir()) {
             for entry in entries.flatten() {
                 let dir = entry.path();
@@ -85,33 +108,71 @@ impl Host {
                 }
                 match manifest::load(&dir) {
                     Ok(p) => {
-                        tracing::info!(
-                            "plugin {} {} ({} actions, {})",
-                            p.uuid,
-                            p.version,
-                            p.actions.len(),
-                            match &p.runtime {
-                                Some(Runtime::Node(_)) => "node",
-                                Some(Runtime::Native(_)) => "native",
-                                Some(Runtime::Html(_)) => "html",
-                                Some(Runtime::Wine(_)) => "wine",
-                                None => "no runnable code for linux",
-                            }
-                        );
-                        for a in &p.actions {
-                            actions.insert(a.uuid.clone(), a.clone());
-                        }
-                        plugins.insert(p.uuid.clone(), p);
+                        tracing::info!("plugin {} {} ({} actions, {})", p.uuid, p.version, p.actions.len(), runtime_name(&p.runtime));
+                        catalog.insert(p);
                     }
                     Err(e) => tracing::warn!("skipping {}: {e:#}", dir.display()),
                 }
             }
         }
-        Arc::new(Host { plugins, actions, port, node: find_node(), inner: Mutex::new(Inner::default()) })
+        Arc::new(Host { catalog: std::sync::RwLock::new(catalog), port, node: find_node(), inner: Mutex::new(Inner::default()) })
     }
 
-    pub fn action(&self, uuid: &str) -> Option<&ActionInfo> {
-        self.actions.get(uuid)
+    pub fn action(&self, uuid: &str) -> Option<Arc<ActionInfo>> {
+        self.catalog.read().unwrap().actions.get(uuid).cloned()
+    }
+
+    pub fn plugin(&self, uuid: &str) -> Option<Arc<PluginInfo>> {
+        self.catalog.read().unwrap().plugins.get(uuid).cloned()
+    }
+
+    pub fn plugins(&self) -> Vec<Arc<PluginInfo>> {
+        self.catalog.read().unwrap().plugins.values().cloned().collect()
+    }
+
+    pub fn is_running(&self, uuid: &str) -> bool {
+        self.inner.lock().unwrap().conns.contains_key(uuid)
+    }
+
+    /// Installs (or upgrades) a plugin from an archive or folder and makes it available immediately.
+    pub fn install(self: &Arc<Self>, src: &Path) -> anyhow::Result<Arc<PluginInfo>> {
+        let dir = crate::installer::install(src)?;
+        let info = manifest::load(&dir)?;
+        let uuid = info.uuid.clone();
+        let was_running = self.stop(&uuid);
+        self.catalog.write().unwrap().insert(info);
+        tracing::info!("installed plugin {uuid}");
+        if was_running {
+            // Bring the new version up for the actions that are on screen.
+            self.inner.lock().unwrap().running.insert(uuid.clone());
+            self.clone().spawn(uuid.clone());
+        }
+        self.plugin(&uuid).ok_or_else(|| anyhow::anyhow!("plugin vanished"))
+    }
+
+    /// Stops and deletes a plugin. Its saved settings are kept in plugin-data.
+    pub fn uninstall(&self, uuid: &str) -> anyhow::Result<()> {
+        let p = self.catalog.read().unwrap().plugins.get(uuid).cloned().ok_or_else(|| anyhow::anyhow!("no such plugin"))?;
+        self.stop(uuid);
+        self.catalog.write().unwrap().remove(uuid);
+        // Only delete inside our own plugins folder.
+        if p.dir.starts_with(plugins_dir()) {
+            std::fs::remove_dir_all(&p.dir)?;
+        }
+        tracing::info!("uninstalled plugin {uuid}");
+        Ok(())
+    }
+
+    /// Stops a running plugin process. Returns whether it was running.
+    fn stop(&self, uuid: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let was = inner.running.remove(uuid);
+        inner.queued.remove(uuid);
+        inner.conns.remove(uuid);
+        if let Some(stop) = inner.stops.remove(uuid) {
+            stop.notify_one();
+        }
+        was
     }
 
     pub fn register_deck(&self, serial: &str, kind: elgato_streamdeck::info::Kind, tx: mpsc::UnboundedSender<ToDeck>) {
@@ -146,7 +207,7 @@ impl Host {
 
     /// Sends an event to whichever plugin owns `action`, starting it if needed.
     pub fn send_to_action(self: &Arc<Self>, action: &str, msg: Value) {
-        let Some(plugin) = self.actions.get(action).map(|a| a.plugin.clone()) else { return };
+        let Some(plugin) = self.action(action).map(|a| a.plugin.clone()) else { return };
         let text = msg.to_string();
         let mut inner = self.inner.lock().unwrap();
         if let Some(conn) = inner.conns.get(&plugin) {
@@ -174,13 +235,26 @@ impl Host {
             let mut failures = 0u32;
             loop {
                 let started = Instant::now();
-                match self.launch(&plugin).await {
-                    Ok(status) => tracing::warn!("plugin {plugin} exited: {status}"),
-                    Err(e) => tracing::error!("plugin {plugin}: {e:#}"),
+                let stop = Arc::new(tokio::sync::Notify::new());
+                self.inner.lock().unwrap().stops.insert(plugin.clone(), stop.clone());
+                tokio::select! {
+                    r = self.launch(&plugin) => match r {
+                        Ok(status) => tracing::warn!("plugin {plugin} exited: {status}"),
+                        Err(e) => tracing::error!("plugin {plugin}: {e:#}"),
+                    },
+                    // Dropping the launch future kills the child (kill_on_drop).
+                    _ = stop.notified() => {
+                        tracing::info!("stopped plugin {plugin}");
+                        return;
+                    }
                 }
                 {
                     let mut inner = self.inner.lock().unwrap();
                     inner.conns.remove(&plugin);
+                    inner.stops.remove(&plugin);
+                    if !inner.running.contains(&plugin) {
+                        return;
+                    }
                 }
                 failures = if started.elapsed() > Duration::from_secs(60) { 0 } else { failures + 1 };
                 if failures >= 5 {
@@ -202,7 +276,7 @@ impl Host {
         let serials: HashSet<&String> = inner
             .contexts
             .values()
-            .filter(|(_, action)| self.actions.get(action).is_some_and(|a| a.plugin == plugin))
+            .filter(|(_, action)| self.action(action).is_some_and(|a| a.plugin == plugin))
             .map(|(serial, _)| serial)
             .collect();
         for serial in serials {
@@ -219,7 +293,7 @@ impl Host {
     /// The `-info` / `inInfo` JSON given to plugins and property inspectors.
     pub fn app_info(&self, plugin: &str) -> Value {
         let devices: Vec<Value> = self.inner.lock().unwrap().decks.values().map(|d| d.info.clone()).collect();
-        let version = self.plugins.get(plugin).map(|p| p.version.clone()).unwrap_or_default();
+        let version = self.plugin(plugin).map(|p| p.version.clone()).unwrap_or_default();
         json!({
             "application": { "font": "", "language": "en", "platform": "linux", "platformVersion": "", "version": "6.9.0" },
             "plugin": { "uuid": plugin, "version": version },
@@ -237,7 +311,8 @@ impl Host {
     }
 
     async fn launch(&self, uuid: &str) -> anyhow::Result<std::process::ExitStatus> {
-        let p = self.plugins.get(uuid).ok_or_else(|| anyhow::anyhow!("unknown plugin"))?;
+        let p = self.plugin(uuid).ok_or_else(|| anyhow::anyhow!("unknown plugin"))?;
+        let p = p.as_ref();
         let info = self.app_info(uuid);
         let args = [
             "-port".to_string(),
@@ -465,7 +540,7 @@ impl Host {
 
     fn context_plugin(&self, inner: &Inner, context: &str) -> Option<String> {
         let (_, action) = inner.contexts.get(context)?;
-        Some(self.actions.get(action)?.plugin.clone())
+        Some(self.action(action)?.plugin.clone())
     }
 
     pub fn global_settings(&self, plugin: &str) -> Value {
@@ -498,6 +573,16 @@ fn runtime_file(name: &str) -> anyhow::Result<PathBuf> {
         std::fs::write(&path, content)?;
     }
     Ok(path)
+}
+
+pub fn runtime_name(rt: &Option<Runtime>) -> &'static str {
+    match rt {
+        Some(Runtime::Node(_)) => "node",
+        Some(Runtime::Native(_)) => "native",
+        Some(Runtime::Html(_)) => "html",
+        Some(Runtime::Wine(_)) => "wine",
+        None => "none",
+    }
 }
 
 fn find_node() -> Option<PathBuf> {

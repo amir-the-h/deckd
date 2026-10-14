@@ -20,11 +20,7 @@ pub fn install(src: &Path) -> Result<PathBuf> {
     } else {
         extract(src, &dest_root)?
     };
-    let info = manifest::load(&dest)?;
-    println!("installed {} {} -> {}", info.name, info.version, dest.display());
-    if info.runtime.is_none() {
-        println!("  warning: no code this host can run on linux");
-    }
+    manifest::load(&dest)?;
     Ok(dest)
 }
 

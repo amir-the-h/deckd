@@ -4,6 +4,7 @@ mod config;
 mod device;
 mod hub;
 mod api;
+mod icons;
 mod importer;
 mod installer;
 mod layout;
@@ -55,8 +56,15 @@ async fn main() -> Result<()> {
         }
         Some("install") if args.len() >= 2 => {
             for path in &args[1..] {
-                if let Err(e) = installer::install(std::path::Path::new(path)) {
-                    eprintln!("{path}: {e:#}");
+                match installer::install(std::path::Path::new(path)).and_then(|d| plugins::manifest::load(&d)) {
+                    Ok(p) => {
+                        println!("installed {} {} -> {}", p.name, p.version, p.dir.display());
+                        if p.runtime.is_none() {
+                            println!("  warning: no code this host can run on linux");
+                        }
+                        println!("  restart deckd, or install from the web UI to load it without restarting");
+                    }
+                    Err(e) => eprintln!("{path}: {e:#}"),
                 }
             }
         }

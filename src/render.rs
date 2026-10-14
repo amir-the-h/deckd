@@ -360,7 +360,7 @@ enum Align {
 }
 
 fn resolve_src(src: &str, plugin_dir: Option<&Path>) -> String {
-    if src.starts_with("data:") || src.starts_with('/') {
+    if src.starts_with("data:") || src.starts_with('/') || src.starts_with("glyph:") {
         return src.to_string();
     }
     if src.trim_start().starts_with("<svg") || src.trim_start().starts_with("<?xml") {
@@ -412,6 +412,10 @@ fn collect_labels(state: Option<&State>) -> Vec<(LabelPos, Label)> {
 }
 
 fn read_source(src: &str) -> anyhow::Result<(Vec<u8>, bool)> {
+    if src.starts_with("glyph:") {
+        let svg = crate::icons::resolve_ref(src).ok_or_else(|| anyhow::anyhow!("icon not found (is its icon set installed?)"))?;
+        return Ok((svg.into_bytes(), true));
+    }
     if let Some(rest) = src.strip_prefix("data:") {
         let (meta, data) = rest.split_once(',').ok_or_else(|| anyhow::anyhow!("malformed data uri"))?;
         let bytes = if meta.ends_with(";base64") {

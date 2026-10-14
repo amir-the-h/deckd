@@ -857,7 +857,8 @@ impl DeckActor {
 
     /// Merges manifest defaults, the user's saved appearance and live plugin updates.
     fn resolve_state(&self, a: &ActionInstance) -> State {
-        let info = self.host.action(&a.uuid);
+        let info_arc = self.host.action(&a.uuid);
+        let info = info_arc.as_deref();
         let mut st = info.and_then(|i| i.states.get(a.state).or(i.states.first())).cloned().unwrap_or_default();
         if let Some(user) = a.current_state() {
             if user.image.is_some() {
@@ -1002,7 +1003,7 @@ impl DeckActor {
                     Some((_, info)) if !info.encoder => self.renderer.render_dial(seg, h as u32, state.as_ref()),
                     Some((a, info)) => {
                         let live = self.live.get(&a.context);
-                        let plugin_dir = self.host.plugins.get(&info.plugin).map(|p| p.dir.clone());
+                        let plugin_dir = self.host.plugin(&info.plugin).map(|p| p.dir.clone());
                         let live_image = live.and_then(|l| l.images.get(&a.state));
                         // Plugins written for OpenDeck draw the whole segment themselves and send it
                         // via setImage. Show such wide images full-size instead of as the layout icon.

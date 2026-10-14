@@ -176,6 +176,11 @@ function connectEvents() {
   ws.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.type === "devices") return loadDevices();
+    if (ev.type === "plugins") {
+      loadCatalog();
+      if (!$("#tab-plugins").classList.contains("hidden")) renderPlugins();
+      return;
+    }
     if (ev.serial !== S.serial) return;
     if (ev.type === "render" && isLivePage()) refreshSlot(ev.input);
     else if (ev.type === "page") {
@@ -332,15 +337,29 @@ function renderDeck() {
     deck.append(el("p", { class: "muted" }, "Waiting for a Stream Deck…"));
     return;
   }
-  const keyPx = window.innerWidth < 1100 ? 78 : 96, gap = 14;
+  // Lay the mirror out in the device's real proportions. On a Stream Deck+ each
+  // key column sits over one 200x100 touch-strip segment, and the 120px key
+  // image covers ~60% of that column, so everything derives from the column pitch.
+  const cols = S.dev.columns;
+  const stage = $(".stage").clientWidth - 120;
+  const pitch = Math.max(100, Math.min(190, Math.floor(stage / cols)));
+  const hasStrip = S.dev.dials > 0 && S.dev.lcd;
+  const keyPx = Math.round(hasStrip ? pitch * (S.dev.keySize / (S.dev.lcd[0] / cols)) : pitch * 0.8);
+  const width = pitch * cols;
+
   const keys = el("div", { class: "keys" });
-  keys.style.gridTemplateColumns = `repeat(${S.dev.columns}, ${keyPx}px)`;
-  for (let k = 0; k < S.dev.keys; k++) keys.append(makeSlot(`key-${k}`, "key"));
+  keys.style.gridTemplateColumns = `repeat(${cols}, ${pitch}px)`;
+  keys.style.rowGap = `${Math.round(pitch - keyPx) * 0.55}px`;
+  for (let k = 0; k < S.dev.keys; k++) {
+    const slot = makeSlot(`key-${k}`, "key");
+    slot.style.width = slot.style.height = `${keyPx}px`;
+    slot.style.borderRadius = `${Math.round(keyPx * 0.14)}px`;
+    keys.append(slot);
+  }
   deck.append(keys);
 
   if (S.dev.dials > 0) {
-    const width = S.dev.columns * keyPx + (S.dev.columns - 1) * gap;
-    if (S.dev.lcd) {
+    if (hasStrip) {
       const strip = el("div", { class: "strip" });
       strip.style.gridTemplateColumns = `repeat(${S.dev.dials}, 1fr)`;
       strip.style.width = `${width}px`;
@@ -350,8 +369,11 @@ function renderDeck() {
     const knobs = el("div", { class: "knobs" });
     knobs.style.gridTemplateColumns = `repeat(${S.dev.dials}, 1fr)`;
     knobs.style.width = `${width}px`;
+    const knobPx = Math.round((width / S.dev.dials) * 0.5);
     for (let d = 0; d < S.dev.dials; d++) {
-      knobs.append(el("div", { class: `knob${S.sel === `dial-${d}` ? " selected" : ""}`, title: `Dial ${d + 1}`, onclick: () => select(`dial-${d}`) }));
+      const knob = el("div", { class: `knob${S.sel === `dial-${d}` ? " selected" : ""}`, title: `Dial ${d + 1}`, onclick: () => select(`dial-${d}`) });
+      knob.style.width = knob.style.height = `${knobPx}px`;
+      knobs.append(knob);
     }
     deck.append(knobs);
   }
@@ -479,6 +501,8 @@ function showTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   $("#tab-library").classList.toggle("hidden", name !== "library");
   $("#tab-inspector").classList.toggle("hidden", name !== "inspector");
+  $("#tab-plugins").classList.toggle("hidden", name !== "plugins");
+  if (name === "plugins") renderPlugins();
 }
 
 // ------------------------------------------------------------------ inspector
@@ -746,10 +770,7 @@ function renderAppearance(slot) {
 
   // Icon
   const current = st.image;
-  const preview = el("div", { class: "row" },
-    el("span", { class: "muted", style: "flex:none" }, current ? "Custom icon" : "Default icon"),
-    el("button", { class: "btn small", style: "flex:none", onclick: () => upload.click() }, "Upload…"),
-    current ? el("button", { class: "btn small", style: "flex:none", onclick: () => { delete st.image; touch(false); renderInspector(); } }, "Use default") : null);
+  const thumbSrc = !current ? slotSrc(S.sel) : current.startsWith("glyph:") ? `/api/glyph?icon=${encodeURIComponent(current)}` : imgUrl(current);
   const upload = el("input", { type: "file", accept: "image/*", class: "hidden" });
   upload.addEventListener("change", async () => {
     const f = upload.files[0];
@@ -757,24 +778,19 @@ function renderAppearance(slot) {
     try {
       const res = await api("POST", `/api/icons?name=${encodeURIComponent(f.name)}`, f);
       st.image = res.path;
-      S.icons = [];
       touch(false);
       renderInspector();
     } catch (e) { toast(e.message, true); }
   });
-  const grid = el("div", { class: "icon-grid" });
-  box.append(field("Icon", el("div", { class: "stack" }, preview, upload, grid)));
-  (async () => {
-    if (!S.icons.length) {
-      try { S.icons = await api("GET", "/api/icons"); } catch {}
-    }
-    for (const ic of S.icons) {
-      grid.append(el("img", {
-        src: ic.url, title: ic.path.split("/").pop(), class: ic.path === current ? "current" : "",
-        onclick: () => { st.image = ic.path; touch(false); renderInspector(); },
-      }));
-    }
-  })();
+  box.append(field("Icon", el("div", { class: "icon-current" },
+    el("div", { class: "thumb" }, el("img", { src: thumbSrc, alt: "" })),
+    el("div", { class: "stack" },
+      el("span", { class: "muted" }, !current ? "Default (from the action)" : current.startsWith("glyph:") ? current.slice(6).split("?")[0] : current.split("/").pop()),
+      el("div", { class: "buttons" },
+        el("button", { class: "btn small primary", onclick: () => openPicker((img) => { st.image = img; touch(false); renderInspector(); }) }, "Choose icon…"),
+        el("button", { class: "btn small", onclick: () => upload.click() }, "Upload…"),
+        current ? el("button", { class: "btn small", onclick: () => { delete st.image; touch(false); renderInspector(); } }, "Use default") : null)),
+    upload)));
 
   // Background
   const bgOn = el("input", { type: "checkbox", checked: st.background ? true : undefined });
@@ -809,6 +825,224 @@ function renderAppearance(slot) {
   return box;
 }
 
+// ------------------------------------------------------------------ icon picker
+
+const P = { onPick: null, source: "all", sets: [], packs: [], timer: null };
+
+const pickerStyle = () => ({ color: $("#picker-color").value, scale: Number($("#picker-scale").value) / 100 });
+const glyphRef = (icon) => {
+  const { color, scale } = pickerStyle();
+  return `glyph:${icon}?color=${encodeURIComponent(color)}&scale=${scale}`;
+};
+
+async function openPicker(onPick) {
+  P.onPick = onPick;
+  try {
+    const saved = JSON.parse(localStorage.getItem("deckd.iconStyle") || "{}");
+    if (saved.color) $("#picker-color").value = saved.color;
+    if (saved.scale) $("#picker-scale").value = Math.round(saved.scale * 100);
+  } catch {}
+  applyPickerStyle();
+  $("#picker").classList.remove("hidden");
+  await loadIconSources();
+  if (P.source === "all" && !P.sets.some((x) => x.installed)) P.source = "get";
+  renderSources();
+  runSearch();
+  setTimeout(() => $("#picker-search").focus());
+}
+
+function closePicker() {
+  $("#picker").classList.add("hidden");
+  P.onPick = null;
+}
+
+async function loadIconSources() {
+  const r = await api("GET", "/api/iconsets");
+  P.sets = r.sets;
+  P.packs = r.packs;
+}
+
+function renderSources() {
+  const nav = $("#picker-sources");
+  nav.innerHTML = "";
+  const src = (id, label, extra) => el("button", {
+    class: `src${P.source === id ? " active" : ""}`,
+    onclick: () => { P.source = id; renderSources(); runSearch(); },
+  }, el("span", {}, label), extra ? el("span", { class: "muted" }, extra) : null);
+  nav.append(src("all", "All icon sets"), src("uploaded", "Uploaded"));
+  const installed = P.sets.filter((x) => x.installed);
+  if (installed.length) nav.append(el("h4", {}, "Icon sets"), ...installed.map((x) => src(x.prefix, x.name)));
+  if (P.packs.length) nav.append(el("h4", {}, "Icon packs"), ...P.packs.map((x) => src(`pack:${x.id}`, x.name, x.count)));
+  nav.append(el("h4", {}, "More"), src("get", "Get icon sets…"));
+}
+
+function applyPickerStyle() {
+  const { color, scale } = pickerStyle();
+  const res = $("#picker-results");
+  res.style.color = color;
+  res.style.setProperty("--glyph", `${Math.round(scale * 100)}%`);
+  try { localStorage.setItem("deckd.iconStyle", JSON.stringify({ color, scale })); } catch {}
+}
+
+const runSearch = debounce(async () => {
+  const res = $("#picker-results");
+  const q = $("#picker-search").value.trim();
+  res.innerHTML = "";
+  $("#picker-note").textContent = "";
+  if (P.source === "get") return renderGetSets(res);
+  if (P.source === "uploaded") {
+    let icons = await api("GET", "/api/icons");
+    if (q) icons = icons.filter((i) => i.path.toLowerCase().includes(q.toLowerCase()));
+    if (!icons.length) res.append(el("p", { class: "msg" }, "No uploaded icons yet. Use Upload… in the inspector."));
+    for (const ic of icons) {
+      res.append(el("div", { class: "ic", title: ic.path.split("/").pop(), onclick: () => pick(ic.path) }, el("img", { src: ic.url, alt: "" })));
+    }
+    return;
+  }
+  if (!q && !P.source.startsWith("pack:")) {
+    res.append(el("p", { class: "msg" }, P.sets.some((x) => x.installed) ? "Type to search, e.g. “volume”, “microphone”, “obs”." : "No icon sets installed yet — pick one under “Get icon sets…”."));
+    return;
+  }
+  const params = new URLSearchParams({ q });
+  if (P.source !== "all") params.set("set", P.source);
+  const results = await api("GET", `/api/iconsets/search?${params}`);
+  if (!results.length) res.append(el("p", { class: "msg" }, "No icons match."));
+  for (const r of results) {
+    if (r.icon) {
+      const tile = el("div", { class: "ic", title: r.icon, onclick: () => pick(glyphRef(r.icon)) }, el("span", { class: "nm" }, r.icon.split(":")[1]));
+      tile.insertAdjacentHTML("afterbegin", r.svg);
+      res.append(tile);
+    } else {
+      res.append(el("div", { class: "ic", title: r.name || "", onclick: () => pick(r.path) }, el("img", { src: r.url, alt: "" })));
+    }
+  }
+  $("#picker-note").textContent = results.length >= 240 ? "Showing the first 240 matches — refine your search." : `${results.length} icons`;
+}, 180);
+
+function renderGetSets(res) {
+  res.append(el("p", { class: "msg" }, "Icon sets are downloaded once from the jsDelivr CDN and then work offline. Search terms never leave your computer."));
+  for (const set of P.sets) {
+    const size = set.bytes ? `${(set.bytes / 1048576).toFixed(1)} MB` : "";
+    const btn = el("button", { class: `btn small${set.installed ? " danger" : " primary"}` }, set.installed ? "Remove" : "Add");
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = set.installed ? "Removing…" : "Downloading…";
+      try {
+        if (set.installed) await api("DELETE", `/api/iconsets/${set.prefix}`);
+        else await api("POST", `/api/iconsets/${set.prefix}`);
+        await loadIconSources();
+        renderSources();
+        runSearch();
+      } catch (e) { toast(e.message, true); btn.disabled = false; }
+    });
+    res.append(el("div", { class: "set-row" },
+      el("div", {}, el("div", {}, set.name), el("div", { class: "muted" }, [set.prefix, set.license, size].filter(Boolean).join(" · "))),
+      btn));
+  }
+  for (const pack of P.packs) {
+    const btn = el("button", { class: "btn small danger" }, "Remove");
+    btn.addEventListener("click", async () => {
+      await api("DELETE", `/api/iconpacks/${encodeURIComponent(pack.id)}`).catch((e) => toast(e.message, true));
+      await loadIconSources();
+      renderSources();
+      runSearch();
+    });
+    res.append(el("div", { class: "set-row" }, el("div", {}, el("div", {}, pack.name), el("div", { class: "muted" }, `Icon pack · ${pack.count} icons`)), btn));
+  }
+}
+
+function pick(image) {
+  const cb = P.onPick;
+  closePicker();
+  cb?.(image);
+}
+
+/** Re-applies the picker's colour and size to every library icon on the current page. */
+async function restyleGlyphs() {
+  const page = pageObj();
+  let n = 0;
+  for (const sect of ["keys", "dials"]) {
+    for (const slot of Object.values(page[sect] || {})) {
+      for (const a of slot.actions) {
+        for (const st of a.states || []) {
+          if (st.image?.startsWith("glyph:")) {
+            st.image = glyphRef(st.image.slice(6).split("?")[0]);
+            n++;
+          }
+        }
+      }
+    }
+  }
+  if (!n) return toast("No library icons on this page yet");
+  await savePage();
+  refreshAllSlots();
+  toast(`Restyled ${n} icon${n === 1 ? "" : "s"}`);
+  if (S.sel) renderInspector();
+}
+
+// ------------------------------------------------------------------ plugins tab
+
+async function renderPlugins() {
+  const list = $("#plugin-list");
+  let plugins;
+  try { plugins = await api("GET", "/api/plugins"); } catch (e) { return toast(e.message, true); }
+  // Where each plugin is used on this device, so removal can warn.
+  const used = {};
+  for (const [pname, page] of Object.entries(S.snap?.pages || {})) {
+    for (const slot of [...Object.values(page.keys || {}), ...Object.values(page.dials || {})]) {
+      for (const a of slot.actions) {
+        const owner = S.actions[a.uuid]?.plugin;
+        if (owner) (used[owner] ||= new Set()).add(pname);
+      }
+    }
+  }
+  list.innerHTML = "";
+  list.append(el("h2", { class: "list-head" }, `Installed plugins (${plugins.length})`));
+  for (const p of plugins) {
+    const pages = [...(used[p.uuid] || [])];
+    const runtime = { node: "Node.js", native: "Native", html: "HTML", wine: "Windows (Wine)", none: "Can't run on Linux" }[p.runtime] || p.runtime;
+    const remove = el("button", { class: "btn small danger" }, "Remove");
+    remove.addEventListener("click", async () => {
+      const warn = pages.length ? ` It's used on: ${pages.join(", ")}. Those buttons will stop working.` : "";
+      if (!(await modal(`Remove ${p.name}?${warn}`, "", false))) return;
+      try {
+        await api("DELETE", `/api/plugins/${encodeURIComponent(p.uuid)}`);
+        toast(`Removed ${p.name}`);
+        await loadCatalog();
+        renderPlugins();
+        refreshAllSlots();
+      } catch (e) { toast(e.message, true); }
+    });
+    list.append(el("div", { class: "plugin-item" },
+      p.icon ? el("img", { src: p.icon, alt: "" }) : el("div", { class: "noicon" }),
+      el("div", {},
+        el("div", { class: "name" }, p.name),
+        el("div", { class: "sub" }, `${p.author || "Unknown author"} · v${p.version} · ${p.actions.length} actions`),
+        el("div", {},
+          el("span", { class: `pill${p.runtime === "none" ? " bad" : ""}` }, runtime),
+          p.running ? el("span", { class: "pill on" }, "running") : null,
+          pages.length ? el("span", { class: "pill" }, `used on ${pages.length} page${pages.length > 1 ? "s" : ""}`) : null)),
+      remove));
+  }
+}
+
+async function installFromFile(file) {
+  const btn = $("#plugin-install");
+  btn.disabled = true;
+  btn.textContent = `Installing ${file.name}…`;
+  try {
+    const r = await api("POST", `/api/plugins?name=${encodeURIComponent(file.name)}`, file);
+    toast(r.iconPack ? `Installed icon pack ${r.iconPack}` : `Installed ${r.name} ${r.version}${r.runtime === "none" ? " — but it has no code that runs on Linux" : ""}`, r.runtime === "none");
+    await loadCatalog();
+    renderPlugins();
+  } catch (e) {
+    toast(`Install failed: ${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Install plugin or icon pack…";
+  }
+}
+
 // ------------------------------------------------------------------ wiring
 
 function renderAll() {
@@ -836,11 +1070,22 @@ function init() {
   bright.addEventListener("input", () => { $("#brightness-value").textContent = `${bright.value}%`; });
   bright.addEventListener("change", () => setProfile({ brightness: Number(bright.value) }));
   $("#search").addEventListener("input", renderLibrary);
+  $("#plugin-install").addEventListener("click", () => $("#plugin-file").click());
+  $("#plugin-file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) installFromFile(f); });
+  $("#picker-close").addEventListener("click", closePicker);
+  $("#picker").addEventListener("click", (e) => { if (e.target.id === "picker") closePicker(); });
+  $("#picker-search").addEventListener("input", runSearch);
+  $("#picker-color").addEventListener("input", applyPickerStyle);
+  $("#picker-scale").addEventListener("input", applyPickerStyle);
+  $("#picker-restyle").addEventListener("click", restyleGlyphs);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#picker").classList.contains("hidden")) closePicker(); });
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
   document.addEventListener("keydown", (e) => {
-    if ((e.key === "Delete" || e.key === "Backspace") && S.sel && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) clearSlot();
+    const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+    const modalOpen = !$("#picker").classList.contains("hidden") || !$("#modal").classList.contains("hidden");
+    if ((e.key === "Delete" || e.key === "Backspace") && S.sel && !typing && !modalOpen) clearSlot();
   });
-  window.addEventListener("resize", debounce(renderDeck, 200));
+  window.addEventListener("resize", debounce(renderDeck, 150));
   connectEvents();
   loadCatalog().catch((e) => toast(e.message, true));
   loadDevices().catch((e) => toast(e.message, true));

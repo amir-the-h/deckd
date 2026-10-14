@@ -39,9 +39,16 @@ pub fn routes() -> Router<AppState> {
         .route("/api/devices/{serial}/render/{page}/{input}", get(render))
         .route("/api/devices/{serial}/inspector/{context}/{op}", post(inspector))
         .route("/api/actions", get(catalog))
+        .route("/api/plugins", get(list_plugins).post(install_plugin).layer(axum::extract::DefaultBodyLimit::max(512 << 20)))
+        .route("/api/plugins/{uuid}", axum::routing::delete(uninstall_plugin))
         .route("/api/audio", get(audio_devices))
-        .route("/api/icons", get(list_icons).post(upload_icon))
+        .route("/api/icons", get(list_icons).post(upload_icon).layer(axum::extract::DefaultBodyLimit::max(8 << 20)))
         .route("/api/events", get(events))
+        .route("/api/iconsets", get(list_iconsets))
+        .route("/api/iconsets/search", get(search_icons))
+        .route("/api/iconsets/{prefix}", post(install_iconset).delete(remove_iconset))
+        .route("/api/iconpacks/{id}", axum::routing::delete(remove_iconpack))
+        .route("/api/glyph", get(glyph))
         .route("/files", get(file))
 }
 
@@ -172,7 +179,7 @@ fn builtins() -> Vec<Value> {
 
 async fn catalog(State(s): State<AppState>) -> Json<Value> {
     let mut groups = vec![json!({ "plugin": "deckd", "name": "Built-in", "actions": builtins() })];
-    for p in s.host.plugins.values() {
+    for p in s.host.plugins() {
         let runnable = p.runtime.is_some();
         let actions: Vec<Value> = p
             .actions
@@ -201,6 +208,124 @@ async fn catalog(State(s): State<AppState>) -> Json<Value> {
         }));
     }
     Json(json!(groups))
+}
+
+async fn list_plugins(State(s): State<AppState>) -> Json<Value> {
+    let list: Vec<Value> = s
+        .host
+        .plugins()
+        .iter()
+        .map(|p| {
+            json!({
+                "uuid": p.uuid,
+                "name": p.name,
+                "version": p.version,
+                "author": p.author,
+                "icon": p.icon.as_deref().and_then(image_url),
+                "runtime": plugins::runtime_name(&p.runtime),
+                "running": s.host.is_running(&p.uuid),
+                "actions": p.actions.iter().map(|a| a.uuid.clone()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Json(json!(list))
+}
+
+#[derive(Deserialize)]
+struct InstallQuery {
+    name: String,
+}
+
+/// Accepts an uploaded `.streamDeckPlugin` (a zip) and installs it.
+async fn install_plugin(State(s): State<AppState>, Query(q): Query<InstallQuery>, body: Bytes) -> ApiResult<Json<Value>> {
+    if body.len() > 512 << 20 {
+        return Err(bad("file too large"));
+    }
+    let tmp_dir = config::config_dir().join("tmp");
+    std::fs::create_dir_all(&tmp_dir).map_err(bad)?;
+    let name = Path::new(&q.name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "upload.zip".into());
+    let tmp = tmp_dir.join(format!("{}-{name}", std::process::id()));
+    std::fs::write(&tmp, &body).map_err(bad)?;
+    if name.ends_with(".streamDeckIconPack") {
+        let t = tmp.clone();
+        let result = tokio::task::spawn_blocking(move || crate::icons::install_pack(&t)).await.map_err(bad)?;
+        let _ = std::fs::remove_file(&tmp);
+        let id = result.map_err(|e| bad(format!("{e:#}")))?;
+        return Ok(Json(json!({ "iconPack": id })));
+    }
+    let host = s.host.clone();
+    let t = tmp.clone();
+    let result = tokio::task::spawn_blocking(move || host.install(&t)).await.map_err(bad)?;
+    let _ = std::fs::remove_file(&tmp);
+    let p = result.map_err(|e| bad(format!("{e:#}")))?;
+    s.hub.emit(json!({ "type": "plugins" }));
+    Ok(Json(json!({ "uuid": p.uuid, "name": p.name, "version": p.version, "runtime": plugins::runtime_name(&p.runtime) })))
+}
+
+async fn uninstall_plugin(State(s): State<AppState>, UrlPath(uuid): UrlPath<String>) -> ApiResult<StatusCode> {
+    let host = s.host.clone();
+    tokio::task::spawn_blocking(move || host.uninstall(&uuid)).await.map_err(bad)?.map_err(|e| bad(format!("{e:#}")))?;
+    s.hub.emit(json!({ "type": "plugins" }));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_iconsets() -> Json<Value> {
+    let packs: Vec<Value> = crate::icons::list_packs()
+        .into_iter()
+        .map(|p| json!({ "id": p["id"], "name": p["name"], "author": p["author"], "count": p["icons"].as_array().map(|a| a.len()) }))
+        .collect();
+    Json(json!({ "sets": crate::icons::list_sets(), "packs": packs }))
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
+    set: Option<String>,
+}
+
+async fn search_icons(Query(q): Query<SearchQuery>) -> Json<Value> {
+    let results = tokio::task::spawn_blocking(move || {
+        let mut r = crate::icons::search(&q.q, q.set.as_deref().filter(|s| !s.is_empty()), 240);
+        for item in &mut r {
+            if let Some(path) = item["path"].as_str().map(String::from) {
+                item["url"] = json!(image_url(&path));
+            }
+        }
+        r
+    })
+    .await
+    .unwrap_or_default();
+    Json(json!(results))
+}
+
+async fn install_iconset(State(s): State<AppState>, UrlPath(prefix): UrlPath<String>) -> ApiResult<StatusCode> {
+    crate::icons::install_set(&prefix).await.map_err(|e| bad(format!("{e:#}")))?;
+    s.hub.emit(json!({ "type": "iconsets" }));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_iconset(State(s): State<AppState>, UrlPath(prefix): UrlPath<String>) -> ApiResult<StatusCode> {
+    crate::icons::remove_set(&prefix).map_err(bad)?;
+    s.hub.emit(json!({ "type": "iconsets" }));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_iconpack(State(s): State<AppState>, UrlPath(id): UrlPath<String>) -> ApiResult<StatusCode> {
+    crate::icons::remove_pack(&id).map_err(bad)?;
+    s.hub.emit(json!({ "type": "iconsets" }));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct GlyphQuery {
+    icon: String,
+}
+
+/// Renders a `glyph:` reference as SVG for previews in the UI.
+async fn glyph(Query(q): Query<GlyphQuery>) -> ApiResult<Response> {
+    let svg = tokio::task::spawn_blocking(move || crate::icons::resolve_ref(&q.icon)).await.ok().flatten().ok_or_else(|| not_found("icon"))?;
+    Ok(([(header::CONTENT_TYPE, "image/svg+xml")], svg).into_response())
 }
 
 async fn audio_devices(State(s): State<AppState>) -> Json<Value> {
