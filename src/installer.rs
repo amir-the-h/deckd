@@ -1,4 +1,7 @@
 //! Installs plugins from `.streamDeckPlugin` archives or unpacked `.sdPlugin` folders.
+//!
+//! New versions are unpacked into a staging folder and validated before they
+//! replace anything, so a broken download never destroys a working install.
 
 use std::path::{Path, PathBuf};
 
@@ -6,25 +9,61 @@ use anyhow::{bail, Context, Result};
 
 use crate::plugins::{manifest, plugins_dir};
 
+/// Marketplace plugins with DRM ship an encrypted manifest that starts with this.
+const DRM_MAGIC: &[u8] = b"ELGATO";
+
 pub fn install(src: &Path) -> Result<PathBuf> {
-    let dest_root = plugins_dir();
-    std::fs::create_dir_all(&dest_root)?;
-    let dest = if src.is_dir() {
-        let name = src.file_name().context("bad path")?;
-        let dest = dest_root.join(name);
-        if dest.exists() {
-            std::fs::remove_dir_all(&dest)?;
+    let root = plugins_dir();
+    std::fs::create_dir_all(&root)?;
+    let staging = root.join(format!(".staging-{}", std::process::id()));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+    std::fs::create_dir_all(&staging)?;
+
+    let result = (|| {
+        let unpacked = if src.is_dir() {
+            let name = src.file_name().context("bad path")?;
+            let dest = staging.join(name);
+            copy_dir(src, &dest)?;
+            dest
+        } else {
+            extract(src, &staging)?
+        };
+        check_manifest(&unpacked)?;
+        manifest::load(&unpacked)?;
+        Ok(unpacked)
+    })();
+
+    let unpacked = match result {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
         }
-        copy_dir(src, &dest)?;
-        dest
-    } else {
-        extract(src, &dest_root)?
     };
-    manifest::load(&dest)?;
+    let dest = root.join(unpacked.file_name().unwrap());
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+    std::fs::rename(&unpacked, &dest)?;
+    let _ = std::fs::remove_dir_all(&staging);
     Ok(dest)
 }
 
-fn extract(archive: &Path, dest_root: &Path) -> Result<PathBuf> {
+/// Gives a clear reason for manifests we can't read, instead of a parse error.
+fn check_manifest(dir: &Path) -> Result<()> {
+    let bytes = std::fs::read(dir.join("manifest.json")).context("plugin has no manifest.json")?;
+    if bytes.starts_with(DRM_MAGIC) {
+        bail!(
+            "this plugin uses Elgato Marketplace DRM: its manifest is encrypted so that only the official \
+             Stream Deck app can load it. Ask the author for a build without DRM (e.g. from GitHub)."
+        );
+    }
+    Ok(())
+}
+
+fn extract(archive: &Path, into: &Path) -> Result<PathBuf> {
     let file = std::fs::File::open(archive).with_context(|| format!("opening {}", archive.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("not a zip archive")?;
     // Archives contain a single top-level `<uuid>.sdPlugin/` folder.
@@ -33,12 +72,8 @@ fn extract(archive: &Path, dest_root: &Path) -> Result<PathBuf> {
         .filter_map(|p| p.components().next().map(|c| c.as_os_str().to_owned()))
         .find(|c| c.to_string_lossy().ends_with(".sdPlugin"));
     let Some(top) = top else { bail!("archive has no .sdPlugin folder") };
-    let dest = dest_root.join(&top);
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest)?;
-    }
-    zip.extract(dest_root)?;
-    Ok(dest)
+    zip.extract(into)?;
+    Ok(into.join(top))
 }
 
 fn copy_dir(src: &Path, dest: &Path) -> Result<()> {

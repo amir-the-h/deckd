@@ -103,7 +103,8 @@ impl Host {
         if let Ok(entries) = std::fs::read_dir(plugins_dir()) {
             for entry in entries.flatten() {
                 let dir = entry.path();
-                if !dir.is_dir() {
+                // Dot-folders are installs in progress.
+                if !dir.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
                     continue;
                 }
                 match manifest::load(&dir) {
