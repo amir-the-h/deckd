@@ -231,3 +231,12 @@ details.raw summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .picker-results .msg { grid-column: 1 / -1; color: var(--muted); }
 .set-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px; border-radius: 8px; background: var(--panel-2); grid-column: 1 / -1; }
 .picker-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); }
+
+/* page settings */
+.page-settings { max-width: 640px; width: 100%; align-self: center; }
+.page-settings .row { align-items: end; }
+.window-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; }
+.window-list button { text-align: left; background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; cursor: pointer; }
+.window-list button:hover { border-color: var(--accent); }
+.window-list .cls { font-family: ui-monospace, monospace; font-size: 12px; }
+.window-list .ttl { color: var(--muted); font-size: 12px; margin-left: 8px; }

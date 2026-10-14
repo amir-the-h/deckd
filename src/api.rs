@@ -43,6 +43,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/plugins/{uuid}", axum::routing::delete(uninstall_plugin))
         .route("/api/audio", get(audio_devices))
         .route("/api/shaders", get(list_shaders))
+        .route("/api/windows", get(list_windows))
         .route("/api/icons", get(list_icons).post(upload_icon).layer(axum::extract::DefaultBodyLimit::max(8 << 20)))
         .route("/api/events", get(events))
         .route("/api/iconsets", get(list_iconsets))
@@ -346,6 +347,11 @@ struct ShaderQuery {
 
 async fn list_shaders(Query(q): Query<ShaderQuery>) -> Json<Value> {
     let list: Vec<Value> = crate::shader::list(&q.folder).into_iter().map(|(name, path)| json!({ "name": name, "path": path })).collect();
+    Json(json!(list))
+}
+
+async fn list_windows() -> Json<Value> {
+    let list: Vec<Value> = crate::focus::windows().await.into_iter().map(|(class, title)| json!({ "class": class, "title": title })).collect();
     Json(json!(list))
 }
 

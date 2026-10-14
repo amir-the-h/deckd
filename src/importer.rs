@@ -46,6 +46,7 @@ pub fn import(sc_dir: &Path, columns: u8) -> Result<()> {
         let sc: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         let mut page = Page {
             brightness: sc.pointer("/brightness/value").and_then(Value::as_u64).map(|v| v as u8),
+            auto: auto_switch(sc.get("auto-change")),
             ..Default::default()
         };
         let mut ctx = Ctx { icons_dir: &icons_dir, unmapped: &mut unmapped, serials: &mut serials };
@@ -106,6 +107,19 @@ struct Ctx<'a> {
     icons_dir: &'a Path,
     unmapped: &'a mut BTreeMap<String, usize>,
     serials: &'a mut BTreeSet<String>,
+}
+
+/// StreamController's per-page "auto-change" focus rule. Imported as switch-and-return.
+fn auto_switch(v: Option<&Value>) -> Option<config::AutoSwitch> {
+    let v = v?;
+    let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let rule = config::AutoSwitch {
+        enabled: v.get("enable").and_then(Value::as_bool).unwrap_or(false),
+        class: s("wm_class"),
+        title: s("title"),
+        stay: false,
+    };
+    (!rule.class.is_empty() || !rule.title.is_empty()).then_some(rule)
 }
 
 fn page_name(path: &Path) -> String {

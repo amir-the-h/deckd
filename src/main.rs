@@ -2,6 +2,7 @@ mod actions;
 mod audio;
 mod config;
 mod device;
+mod focus;
 mod hub;
 mod api;
 mod icons;
@@ -51,7 +52,7 @@ async fn main() -> Result<()> {
             let audio = audio::start();
             let app = server::router(api::AppState { host: host.clone(), hub: hub.clone(), audio: audio.clone() });
             tokio::select! {
-                r = device::run_manager(renderer, host, hub, audio) => r?,
+                r = device::run_manager(renderer, host, hub, audio, focus::start()) => r?,
                 r = async { axum::serve(listener, app).await } => r?,
                 _ = shutdown_signal() => tracing::info!("shutting down"),
             }

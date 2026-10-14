@@ -88,11 +88,16 @@ pub struct DeckActor {
     /// Now-playing info by player filter.
     media: HashMap<String, Option<crate::widgets::Media>>,
     ticks: u64,
+    focus: crate::focus::FocusWatch,
+    /// Page we switched to automatically, and the page to return to afterwards.
+    auto_page: Option<String>,
+    auto_return: Option<String>,
+    regexes: HashMap<String, Option<regex::Regex>>,
     tx: mpsc::UnboundedSender<Event>,
 }
 
 /// Scans for devices forever, spawning an actor for each one that appears.
-pub async fn run_manager(renderer: Arc<Renderer>, host: Arc<Host>, hub: Arc<Hub>, audio: AudioWatch) -> Result<()> {
+pub async fn run_manager(renderer: Arc<Renderer>, host: Arc<Host>, hub: Arc<Hub>, audio: AudioWatch, focus: crate::focus::FocusWatch) -> Result<()> {
     let mut hid = new_hidapi()?;
     let mut active: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     let mut recovery = crate::usbreset::Recovery::default();
@@ -109,11 +114,11 @@ pub async fn run_manager(renderer: Arc<Renderer>, host: Arc<Host>, hub: Arc<Hub>
             match AsyncStreamDeck::connect(&hid, kind, &serial) {
                 Ok(deck) => {
                     tracing::info!("connected {kind:?} {serial}");
-                    let (renderer, host, hub, audio, s) = (renderer.clone(), host.clone(), hub.clone(), audio.clone(), serial.clone());
+                    let (renderer, host, hub, audio, focus, s) = (renderer.clone(), host.clone(), hub.clone(), audio.clone(), focus.clone(), serial.clone());
                     active.insert(
                         serial,
                         tokio::spawn(async move {
-                            if let Err(e) = DeckActor::run(Arc::new(deck), kind, s.clone(), renderer, host.clone(), hub.clone(), audio).await {
+                            if let Err(e) = DeckActor::run(Arc::new(deck), kind, s.clone(), renderer, host.clone(), hub.clone(), audio, focus).await {
                                 tracing::error!("deck {s}: {e:#}");
                             }
                             host.unregister_deck(&s);
@@ -130,7 +135,8 @@ pub async fn run_manager(renderer: Arc<Renderer>, host: Arc<Host>, hub: Arc<Hub>
 }
 
 impl DeckActor {
-    async fn run(deck: Arc<AsyncStreamDeck>, kind: Kind, serial: String, renderer: Arc<Renderer>, host: Arc<Host>, hub: Arc<Hub>, audio: AudioWatch) -> Result<()> {
+    async fn run(deck: Arc<AsyncStreamDeck>, kind: Kind, serial: String, renderer: Arc<Renderer>, host: Arc<Host>, hub: Arc<Hub>, audio: AudioWatch, mut focus: crate::focus::FocusWatch) -> Result<()> {
+        focus.mark_changed();
         let cfg = config::load_device(&serial)?;
         let current = if cfg.pages.contains_key(&cfg.profile.default_page) {
             cfg.profile.default_page.clone()
@@ -184,6 +190,10 @@ impl DeckActor {
             mango: None,
             media: HashMap::new(),
             ticks: 0,
+            focus,
+            auto_page: None,
+            auto_return: None,
+            regexes: HashMap::new(),
             tx,
         };
         actor.rebuild_index();
@@ -206,6 +216,10 @@ impl DeckActor {
                 },
                 Some(msg) = prx.recv() => actor.on_plugin(msg).await,
                 Ok(()) = actor.audio.changed() => actor.mark_uuid(actions::VOLUME),
+                Ok(()) = actor.focus.changed() => {
+                    let f = actor.focus.borrow_and_update().clone();
+                    actor.on_focus(f).await;
+                },
                 Some(cmd) = urx.recv() => actor.on_ui(cmd).await,
             }
             // Coalesce bursts (e.g. a plugin animating feedback) into one redraw.
@@ -988,6 +1002,7 @@ impl DeckActor {
     }
 
     async fn delete_page(&mut self, name: &str) -> Result<(), String> {
+        self.clear_auto();
         if !self.cfg.pages.contains_key(name) {
             return Err(format!("no page {name:?}"));
         }
@@ -1011,6 +1026,7 @@ impl DeckActor {
     }
 
     fn rename_page(&mut self, from: &str, to: &str) -> Result<(), String> {
+        self.clear_auto();
         if !config::valid_page_name(to) {
             return Err(format!("invalid page name {to:?}"));
         }
@@ -1060,20 +1076,12 @@ impl DeckActor {
     async fn apply(&mut self, effect: Effect) {
         match effect {
             Effect::SwitchPage(name) => {
-                if !self.cfg.pages.contains_key(&name) {
-                    tracing::warn!("no page named {name:?}");
-                    return;
-                }
-                if name != self.current {
-                    let prev = std::mem::replace(&mut self.current, name);
-                    self.history.push(prev.clone());
-                    if self.history.len() > 32 {
-                        self.history.remove(0);
-                    }
-                    self.enter_page(Some(prev)).await;
-                }
+                // Navigating by hand ends any automatic switch, so focus changes won't undo it.
+                self.clear_auto();
+                self.go_to(name).await;
             }
             Effect::Back => {
+                self.clear_auto();
                 if let Some(prev) = self.history.pop() {
                     let old = std::mem::replace(&mut self.current, prev);
                     self.enter_page(Some(old)).await;
@@ -1106,6 +1114,83 @@ impl DeckActor {
                         let _ = tx.send(Event::ShaderActive(active));
                     }
                 });
+            }
+        }
+    }
+
+    async fn go_to(&mut self, name: String) {
+        if !self.cfg.pages.contains_key(&name) {
+            tracing::warn!("no page named {name:?}");
+            return;
+        }
+        if name != self.current {
+            let prev = std::mem::replace(&mut self.current, name);
+            self.history.push(prev.clone());
+            if self.history.len() > 32 {
+                self.history.remove(0);
+            }
+            self.enter_page(Some(prev)).await;
+        }
+    }
+
+    fn clear_auto(&mut self) {
+        self.auto_page = None;
+        self.auto_return = None;
+    }
+
+    fn pattern_matches(&mut self, pattern: &str, text: &str) -> bool {
+        let re = self
+            .regexes
+            .entry(pattern.to_string())
+            .or_insert_with(|| match regex::RegexBuilder::new(pattern).case_insensitive(true).build() {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    tracing::warn!("bad auto-switch pattern {pattern:?}: {e}");
+                    None
+                }
+            });
+        re.as_ref().is_some_and(|r| r.is_match(text))
+    }
+
+    /// The first page (by name) whose focus rule matches the window.
+    fn page_for_focus(&mut self, f: &crate::focus::Focus) -> Option<String> {
+        let rules: Vec<(String, config::AutoSwitch)> =
+            self.cfg.pages.iter().filter_map(|(n, p)| Some((n.clone(), p.auto.clone()?))).filter(|(_, a)| a.enabled).collect();
+        for (name, rule) in rules {
+            if rule.class.is_empty() && rule.title.is_empty() {
+                continue;
+            }
+            let class_ok = rule.class.is_empty() || self.pattern_matches(&rule.class, &f.class);
+            let title_ok = rule.title.is_empty() || self.pattern_matches(&rule.title, &f.title);
+            if class_ok && title_ok {
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    async fn on_focus(&mut self, f: crate::focus::Focus) {
+        match self.page_for_focus(&f) {
+            Some(page) if page != self.current => {
+                // Remember where we came from, unless we're hopping between auto pages.
+                if self.auto_page.is_none() {
+                    self.auto_return = Some(self.current.clone());
+                }
+                tracing::info!("[{}] focus {:?} -> page {page}", self.serial, f.class);
+                self.auto_page = Some(page.clone());
+                self.go_to(page).await;
+            }
+            Some(_) => {}
+            None => {
+                let Some(page) = self.auto_page.take() else { return };
+                let back = self.auto_return.take();
+                let stay = self.cfg.pages.get(&page).and_then(|p| p.auto.as_ref()).is_some_and(|a| a.stay);
+                if !stay && self.current == page {
+                    if let Some(back) = back.filter(|b| self.cfg.pages.contains_key(b)) {
+                        tracing::info!("[{}] focus left {page}; back to {back}", self.serial);
+                        self.go_to(back).await;
+                    }
+                }
             }
         }
     }

@@ -62,10 +62,35 @@ impl Default for Profile {
 pub struct Page {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brightness: Option<u8>,
+    /// Switch to this page while a matching window has focus.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto: Option<AutoSwitch>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<u8, Slot>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub dials: BTreeMap<u8, Slot>,
+}
+
+/// Focus rule for automatic page switching. Patterns are case-insensitive
+/// regexes; empty ones are ignored, and all given ones must match.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoSwitch {
+    pub enabled: bool,
+    /// Window class (Wayland app id), e.g. `obs` or `chrome-app\.zoom\.us`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub class: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// Stay on the page after the window loses focus instead of going back.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stay: bool,
+}
+
+impl Default for AutoSwitch {
+    fn default() -> Self {
+        Self { enabled: true, class: String::new(), title: String::new(), stay: false }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -230,6 +230,64 @@ function selectPage(name) {
   renderAll();
 }
 
+// Escapes text so a window class can be used literally in a regex.
+const reEscape = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function renderPageSettings() {
+  const box = $("#page-settings");
+  box.innerHTML = "";
+  const page = pageObj();
+  if (!page) return;
+  const rule = page.auto || {};
+  const enabled = !!page.auto && rule.enabled !== false;
+  const save = () => savePageSoon();
+  const setRule = (patch) => {
+    page.auto = { enabled: true, ...page.auto, ...patch };
+    save();
+  };
+
+  const toggle = el("input", { type: "checkbox", checked: enabled ? true : undefined });
+  const cls = el("input", { value: rule.class || "", placeholder: "e.g. obs or chrome-app\\.zoom\\.us" });
+  const title = el("input", { value: rule.title || "", placeholder: "optional, e.g. Zoom Meeting" });
+  const back = el("input", { type: "checkbox", checked: rule.stay ? undefined : true });
+  const fields = el("div", { class: "stack" + (enabled ? "" : " hidden") });
+
+  toggle.addEventListener("change", () => {
+    if (toggle.checked) setRule({ enabled: true });
+    else if (page.auto) { page.auto.enabled = false; save(); }
+    fields.classList.toggle("hidden", !toggle.checked);
+  });
+  cls.addEventListener("input", () => setRule({ class: cls.value.trim() }));
+  title.addEventListener("input", () => setRule({ title: title.value.trim() }));
+  back.addEventListener("change", () => setRule({ stay: !back.checked }));
+
+  const list = el("div", { class: "window-list hidden" });
+  const pick = el("button", { class: "btn small", style: "flex:none" }, "Pick from open windows…");
+  pick.addEventListener("click", async () => {
+    if (!list.classList.contains("hidden")) return list.classList.add("hidden");
+    const wins = await api("GET", "/api/windows").catch(() => []);
+    list.innerHTML = "";
+    if (!wins.length) list.append(el("p", { class: "muted" }, "No windows found (is Hyprland running?)."));
+    for (const w of wins) {
+      list.append(el("button", {
+        onclick: () => { cls.value = `^${reEscape(w.class)}$`; setRule({ class: cls.value }); list.classList.add("hidden"); },
+      }, el("span", { class: "cls" }, w.class), el("span", { class: "ttl" }, w.title.slice(0, 60))));
+    }
+    list.classList.remove("hidden");
+  });
+
+  fields.append(
+    el("div", { class: "row" }, field("Window class", cls), pick),
+    list,
+    field("Window title", title),
+    el("label", { class: "row", style: "justify-content:flex-start;gap:8px" }, back, el("span", { style: "flex:none" }, "Go back to the previous page when the app loses focus")),
+    el("p", { class: "muted" }, "Patterns are case-insensitive regular expressions; a plain word matches anywhere in the name. Changing pages by hand while on an auto page cancels the automatic return."));
+  box.append(
+    el("div", { class: "section-head" }, el("h2", {}, "Page settings")),
+    el("label", { class: "row", style: "justify-content:flex-start;gap:8px" }, toggle, el("span", { style: "flex:none" }, "Switch to this page automatically when an app is focused")),
+    fields);
+}
+
 function renderStageHead() {
   $("#page-title").textContent = S.page || "—";
   const live = isLivePage();
@@ -1098,6 +1156,7 @@ async function installFromFile(file) {
 function renderAll() {
   renderPages();
   renderStageHead();
+  renderPageSettings();
   renderDeck();
   renderInspector();
 }
