@@ -1,0 +1,23 @@
+[package]
+name = "deckd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ab_glyph = "0.2.32"
+anyhow = "1.0.104"
+axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.23.1"
+dirs = "7.0.0"
+elgato-streamdeck = { version = "0.13.2", features = ["async"] }
+futures-util = "0.3.34"
+image = "0.25.10"
+imageproc = "0.27.0"
+resvg = "0.48.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.53.3", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.28.0", features = ["v4"] }
+zip = "9.0.3"
