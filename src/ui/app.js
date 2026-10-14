@@ -153,6 +153,7 @@ async function loadCatalog() {
 
 async function savePage() {
   const name = S.page;
+  S.pendingSave = false;
   try {
     const page = await api("PUT", `/api/devices/${S.serial}/pages/${encodeURIComponent(name)}`, pageObj());
     S.snap.pages[name] = page;
@@ -160,7 +161,12 @@ async function savePage() {
     toast(`Couldn't save: ${e.message}`, true);
   }
 }
-const savePageSoon = debounce(savePage, 350);
+const savePageDebounced = debounce(savePage, 350);
+// Marks the current page as having unsaved edits so a reload in the meantime doesn't drop them.
+const savePageSoon = () => {
+  S.pendingSave = true;
+  savePageDebounced();
+};
 
 // ------------------------------------------------------------------ events
 
@@ -195,10 +201,13 @@ function connectEvents() {
 
 // Refetch without disturbing inputs being edited or an open settings panel.
 const reloadQuietly = debounce(async () => {
-  S.snap = await api("GET", `/api/devices/${S.serial}`);
+  const fresh = await api("GET", `/api/devices/${S.serial}`);
+  if (S.pendingSave && S.snap?.pages?.[S.page]) fresh.pages[S.page] = S.snap.pages[S.page];
+  S.snap = fresh;
   if (!S.snap.pages[S.page]) S.page = S.snap.current;
   renderPages();
   renderStageHead();
+  if (!$("#page-settings").contains(document.activeElement)) renderPageSettings();
   refreshAllSlots();
   renderStack();
 }, 150);
@@ -241,8 +250,11 @@ function renderPageSettings() {
   const rule = page.auto || {};
   const enabled = !!page.auto && rule.enabled !== false;
   const save = () => savePageSoon();
+  // Look the page up on every change: the snapshot is replaced whenever deckd reports an update.
   const setRule = (patch) => {
-    page.auto = { enabled: true, ...page.auto, ...patch };
+    const p = pageObj();
+    if (!p) return;
+    p.auto = { enabled: true, ...p.auto, ...patch };
     save();
   };
 
@@ -254,7 +266,7 @@ function renderPageSettings() {
 
   toggle.addEventListener("change", () => {
     if (toggle.checked) setRule({ enabled: true });
-    else if (page.auto) { page.auto.enabled = false; save(); }
+    else if (pageObj()?.auto) { pageObj().auto.enabled = false; save(); }
     fields.classList.toggle("hidden", !toggle.checked);
   });
   cls.addEventListener("input", () => setRule({ class: cls.value.trim() }));
@@ -616,7 +628,9 @@ function renderStack() {
       onclick: (e) => e.stopPropagation(),
       onchange: (e) => {
         const v = e.target.value;
-        if (v) a.trigger = v; else delete a.trigger;
+        const act = getSlot(S.sel)?.actions[i];
+        if (!act) return;
+        if (v) act.trigger = v; else delete act.trigger;
         savePage();
       },
     },
@@ -631,15 +645,16 @@ function renderStack() {
       multi ? trig : null,
       multi ? el("button", {
         class: "btn small", title: "Show this action's picture on the deck",
-        onclick: (e) => { e.stopPropagation(); slot.display = i; savePage().then(() => { refreshSlot(S.sel); renderInspector(); }); },
+        onclick: (e) => { e.stopPropagation(); getSlot(S.sel).display = i; savePage().then(() => { refreshSlot(S.sel); renderInspector(); }); },
       }, (slot.display || 0) === i ? "◉" : "○") : null,
       el("button", {
         class: "btn small", title: "Remove",
         onclick: async (e) => {
           e.stopPropagation();
-          slot.actions.splice(i, 1);
-          if ((slot.display || 0) >= slot.actions.length) slot.display = 0;
-          setSlot(S.sel, slot.actions.length ? slot : null);
+          const cur = getSlot(S.sel);
+          cur.actions.splice(i, 1);
+          if ((cur.display || 0) >= cur.actions.length) cur.display = 0;
+          setSlot(S.sel, cur.actions.length ? cur : null);
           S.selAction = 0;
           unmountPI();
           await savePage();
@@ -871,13 +886,15 @@ function displayState(slot) {
 
 function renderAppearance(slot) {
   const box = el("div", { class: "section" }, el("div", { class: "section-head" }, el("h2", {}, "Appearance")));
-  const st = displayState(slot);
+  // Initial values come from st0; handlers write through curState() so a reloaded snapshot isn't missed.
+  const curState = () => displayState(getSlot(S.sel) || slot);
+  const st0 = curState();
   const changed = (soon = true) => (soon ? savePageSoon : savePage)();
   const refreshSoon = debounce(() => refreshSlot(S.sel), 450);
   const touch = (soon) => { changed(soon); refreshSoon(); };
 
   // Icon
-  const current = st.image;
+  const current = st0.image;
   const thumbSrc = !current ? slotSrc(S.sel) : current.startsWith("glyph:") ? `/api/glyph?icon=${encodeURIComponent(current)}` : imgUrl(current);
   const upload = el("input", { type: "file", accept: "image/*", class: "hidden" });
   upload.addEventListener("change", async () => {
@@ -885,7 +902,7 @@ function renderAppearance(slot) {
     if (!f) return;
     try {
       const res = await api("POST", `/api/icons?name=${encodeURIComponent(f.name)}`, f);
-      st.image = res.path;
+      curState().image = res.path;
       touch(false);
       renderInspector();
     } catch (e) { toast(e.message, true); }
@@ -895,28 +912,34 @@ function renderAppearance(slot) {
     el("div", { class: "stack" },
       el("span", { class: "muted" }, !current ? "Default (from the action)" : current.startsWith("glyph:") ? current.slice(6).split("?")[0] : current.split("/").pop()),
       el("div", { class: "buttons" },
-        el("button", { class: "btn small primary", onclick: () => openPicker((img) => { st.image = img; touch(false); renderInspector(); }) }, "Choose icon…"),
+        el("button", { class: "btn small primary", onclick: () => openPicker((img) => { curState().image = img; touch(false); renderInspector(); }) }, "Choose icon…"),
         el("button", { class: "btn small", onclick: () => upload.click() }, "Upload…"),
-        current ? el("button", { class: "btn small", onclick: () => { delete st.image; touch(false); renderInspector(); } }, "Use default") : null)),
+        current ? el("button", { class: "btn small", onclick: () => { delete curState().image; touch(false); renderInspector(); } }, "Use default") : null)),
     upload)));
 
   // Background
-  const bgOn = el("input", { type: "checkbox", checked: st.background ? true : undefined });
-  const bg = el("input", { type: "color", value: st.background || "#000000" });
-  const applyBg = () => { if (bgOn.checked) st.background = bg.value; else delete st.background; touch(true); };
+  const bgOn = el("input", { type: "checkbox", checked: st0.background ? true : undefined });
+  const bg = el("input", { type: "color", value: st0.background || "#000000" });
+  const applyBg = () => {
+    const st = curState();
+    if (bgOn.checked) st.background = bg.value; else delete st.background;
+    touch(true);
+  };
   bgOn.addEventListener("change", applyBg);
   bg.addEventListener("input", () => { bgOn.checked = true; applyBg(); });
   box.append(field("Background", el("div", { class: "row" }, el("label", { class: "row", style: "flex:none" }, bgOn, "Colour"), bg)));
 
   // Labels
   const grid2 = el("div", { class: "labels-grid" });
-  st.labels ||= {};
+  st0.labels ||= {};
   for (const pos of ["top", "center", "bottom"]) {
-    const l = st.labels[pos] || {};
+    const l = st0.labels[pos] || {};
     const text = el("input", { value: l.text || "", placeholder: "Text" });
     const size = el("input", { type: "number", value: l.size || "", placeholder: "16", min: 6, max: 60 });
     const color = el("input", { type: "color", value: l.color || "#ffffff" });
     const apply = () => {
+      const st = curState();
+      st.labels ||= {};
       if (!text.value) { delete st.labels[pos]; }
       else {
         st.labels[pos] = { text: text.value };
