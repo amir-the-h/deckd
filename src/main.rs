@@ -2,6 +2,8 @@ mod actions;
 mod audio;
 mod config;
 mod device;
+mod hub;
+mod api;
 mod importer;
 mod installer;
 mod layout;
@@ -42,9 +44,11 @@ async fn main() -> Result<()> {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
             let host = plugins::Host::load(port);
             tracing::info!("listening on http://127.0.0.1:{port}");
-            let app = server::router(host.clone());
+            let hub = Arc::new(hub::Hub::new());
+            let audio = audio::start();
+            let app = server::router(api::AppState { host: host.clone(), hub: hub.clone(), audio: audio.clone() });
             tokio::select! {
-                r = device::run_manager(renderer, host, audio::start()) => r?,
+                r = device::run_manager(renderer, host, hub, audio) => r?,
                 r = async { axum::serve(listener, app).await } => r?,
                 _ = shutdown_signal() => tracing::info!("shutting down"),
             }

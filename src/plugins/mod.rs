@@ -212,12 +212,17 @@ impl Host {
         }
     }
 
-    async fn launch(&self, uuid: &str) -> anyhow::Result<std::process::ExitStatus> {
-        let p = self.plugins.get(uuid).ok_or_else(|| anyhow::anyhow!("unknown plugin"))?;
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// The `-info` / `inInfo` JSON given to plugins and property inspectors.
+    pub fn app_info(&self, plugin: &str) -> Value {
         let devices: Vec<Value> = self.inner.lock().unwrap().decks.values().map(|d| d.info.clone()).collect();
-        let info = json!({
+        let version = self.plugins.get(plugin).map(|p| p.version.clone()).unwrap_or_default();
+        json!({
             "application": { "font": "", "language": "en", "platform": "linux", "platformVersion": "", "version": "6.9.0" },
-            "plugin": { "uuid": uuid, "version": p.version },
+            "plugin": { "uuid": plugin, "version": version },
             "devicePixelRatio": 2,
             "colors": {
                 "buttonPressedBackgroundColor": "#303030FF",
@@ -228,7 +233,12 @@ impl Host {
                 "mouseDownColor": "#2EA8FFFF"
             },
             "devices": devices,
-        });
+        })
+    }
+
+    async fn launch(&self, uuid: &str) -> anyhow::Result<std::process::ExitStatus> {
+        let p = self.plugins.get(uuid).ok_or_else(|| anyhow::anyhow!("unknown plugin"))?;
+        let info = self.app_info(uuid);
         let args = [
             "-port".to_string(),
             self.port.to_string(),
@@ -240,7 +250,7 @@ impl Host {
             info.to_string(),
         ];
 
-        let mut cmd = match p.runtime.as_ref() {
+        let cmd = match p.runtime.as_ref() {
             Some(Runtime::Node(path)) => {
                 let node = self.node.as_ref().ok_or_else(|| anyhow::anyhow!("node.js not found; set DECKD_NODE"))?;
                 let mut c = tokio::process::Command::new(node);

@@ -17,7 +17,9 @@ use crate::config::{self, ActionInstance, DeviceConfig, Label, LabelPos, Slot, S
 use crate::layout::Layout;
 use crate::plugins::{Host, ToDeck};
 use crate::audio::{self, AudioWatch};
+use crate::hub::{Hub, UiCmd};
 use crate::render::{icons, Flash, Renderer};
+use image::DynamicImage;
 
 const HOLD_THRESHOLD: Duration = Duration::from_millis(500);
 const FLASH_TIME: Duration = Duration::from_millis(1200);
@@ -66,6 +68,7 @@ pub struct DeckActor {
     serial: String,
     renderer: Arc<Renderer>,
     host: Arc<Host>,
+    hub: Arc<Hub>,
     audio: AudioWatch,
     cfg: DeviceConfig,
     index: HashMap<String, Loc>,
@@ -80,7 +83,7 @@ pub struct DeckActor {
 }
 
 /// Scans for devices forever, spawning an actor for each one that appears.
-pub async fn run_manager(renderer: Arc<Renderer>, host: Arc<Host>, audio: AudioWatch) -> Result<()> {
+pub async fn run_manager(renderer: Arc<Renderer>, host: Arc<Host>, hub: Arc<Hub>, audio: AudioWatch) -> Result<()> {
     let mut hid = new_hidapi()?;
     let mut active: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     let mut recovery = crate::usbreset::Recovery::default();
@@ -97,14 +100,15 @@ pub async fn run_manager(renderer: Arc<Renderer>, host: Arc<Host>, audio: AudioW
             match AsyncStreamDeck::connect(&hid, kind, &serial) {
                 Ok(deck) => {
                     tracing::info!("connected {kind:?} {serial}");
-                    let (renderer, host, audio, s) = (renderer.clone(), host.clone(), audio.clone(), serial.clone());
+                    let (renderer, host, hub, audio, s) = (renderer.clone(), host.clone(), hub.clone(), audio.clone(), serial.clone());
                     active.insert(
                         serial,
                         tokio::spawn(async move {
-                            if let Err(e) = DeckActor::run(Arc::new(deck), kind, s.clone(), renderer, host.clone(), audio).await {
+                            if let Err(e) = DeckActor::run(Arc::new(deck), kind, s.clone(), renderer, host.clone(), hub.clone(), audio).await {
                                 tracing::error!("deck {s}: {e:#}");
                             }
                             host.unregister_deck(&s);
+                            hub.unregister(&s);
                             tracing::info!("deck {s} gone");
                         }),
                     );
@@ -117,7 +121,7 @@ pub async fn run_manager(renderer: Arc<Renderer>, host: Arc<Host>, audio: AudioW
 }
 
 impl DeckActor {
-    async fn run(deck: Arc<AsyncStreamDeck>, kind: Kind, serial: String, renderer: Arc<Renderer>, host: Arc<Host>, audio: AudioWatch) -> Result<()> {
+    async fn run(deck: Arc<AsyncStreamDeck>, kind: Kind, serial: String, renderer: Arc<Renderer>, host: Arc<Host>, hub: Arc<Hub>, audio: AudioWatch) -> Result<()> {
         let cfg = config::load_device(&serial)?;
         let current = if cfg.pages.contains_key(&cfg.profile.default_page) {
             cfg.profile.default_page.clone()
@@ -127,6 +131,7 @@ impl DeckActor {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (ptx, mut prx) = mpsc::unbounded_channel();
         host.register_deck(&serial, kind, ptx);
+        let (utx, mut urx) = mpsc::unbounded_channel();
 
         let reader = deck.get_reader();
         let rtx = tx.clone();
@@ -155,6 +160,7 @@ impl DeckActor {
             serial,
             renderer,
             host,
+            hub,
             audio,
             brightness: cfg.profile.brightness,
             index: HashMap::new(),
@@ -170,6 +176,7 @@ impl DeckActor {
         actor.rebuild_index();
         actor.deck.reset().await?;
         actor.enter_page(None).await;
+        actor.hub.register(&actor.serial, crate::hub::DeckHandle { tx: utx, kind });
 
         loop {
             tokio::select! {
@@ -179,6 +186,7 @@ impl DeckActor {
                 },
                 Some(msg) = prx.recv() => actor.on_plugin(msg).await,
                 Ok(()) = actor.audio.changed() => actor.mark_uuid(actions::VOLUME),
+                Some(cmd) = urx.recv() => actor.on_ui(cmd).await,
             }
             // Coalesce bursts (e.g. a plugin animating feedback) into one redraw.
             while let Ok(msg) = prx.try_recv() {
@@ -522,6 +530,7 @@ impl DeckActor {
                 a.settings = payload.clone();
                 let (uuid, page, input) = (a.uuid.clone(), loc.page.clone(), loc.input);
                 self.save_page(&page);
+                self.hub.emit(json!({ "type": "settings", "serial": self.serial, "context": ctx }));
                 let msg = json!({
                     "action": uuid, "event": "didReceiveSettings", "context": ctx, "device": serial,
                     "payload": { "settings": payload, "coordinates": self.coordinates(input), "isInMultiAction": false },
@@ -574,6 +583,206 @@ impl DeckActor {
         }
     }
 
+
+    // ------------------------------------------------------------- web UI
+
+    async fn on_ui(&mut self, cmd: UiCmd) {
+        match cmd {
+            UiCmd::Snapshot(reply) => {
+                let _ = reply.send(crate::hub::Snapshot {
+                    profile: self.cfg.profile.clone(),
+                    current: self.current.clone(),
+                    pages: self.cfg.pages.clone(),
+                });
+            }
+            UiCmd::PutPage { name, page, reply } => {
+                let _ = reply.send(self.put_page(name, page).await);
+            }
+            UiCmd::DeletePage { name, reply } => {
+                let _ = reply.send(self.delete_page(&name).await);
+            }
+            UiCmd::RenamePage { from, to, reply } => {
+                let _ = reply.send(self.rename_page(&from, &to));
+            }
+            UiCmd::SetProfile { profile, reply } => {
+                self.cfg.profile = profile;
+                self.brightness = self.cfg.profile.brightness;
+                let page_brightness = self.cfg.pages.get(&self.current).and_then(|p| p.brightness);
+                let _ = self.deck.set_brightness(page_brightness.unwrap_or(self.brightness)).await;
+                let r = config::write_json(&self.cfg.dir.join("profile.json"), &self.cfg.profile).map_err(|e| format!("{e:#}"));
+                self.hub.emit(json!({ "type": "config", "serial": self.serial }));
+                let _ = reply.send(r);
+            }
+            UiCmd::Switch { page } => self.apply(Effect::SwitchPage(page)).await,
+            UiCmd::Render { page, input, reply } => {
+                let png = self.render(&page, input).and_then(|img| {
+                    let mut buf = std::io::Cursor::new(Vec::new());
+                    img.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+                    Some(buf.into_inner())
+                });
+                let _ = reply.send(png);
+            }
+            UiCmd::Inspector { context, open, reply } => {
+                let Some(loc) = self.index.get(&context).cloned() else {
+                    let _ = reply.send(Err("unknown action".into()));
+                    return;
+                };
+                let Some(a) = self.slot(&loc.page, loc.input).and_then(|s| s.actions.get(loc.index)).cloned() else {
+                    let _ = reply.send(Err("unknown action".into()));
+                    return;
+                };
+                self.host.register_context(&context, &self.serial, &a.uuid);
+                let event = if open { "propertyInspectorDidAppear" } else { "propertyInspectorDidDisappear" };
+                self.host.send_to_action(&a.uuid, json!({ "action": a.uuid, "event": event, "context": context, "device": self.serial }));
+                let controller = if matches!(loc.input, InputId::Dial(_)) && self.supports_encoder(&a) { "Encoder" } else { "Keypad" };
+                let _ = reply.send(Ok(json!({
+                    "action": a.uuid,
+                    "context": context,
+                    "device": self.serial,
+                    "payload": {
+                        "settings": if a.settings.is_object() { a.settings.clone() } else { json!({}) },
+                        "coordinates": self.coordinates(loc.input),
+                        "controller": controller,
+                        "state": a.state,
+                        "isInMultiAction": false,
+                    },
+                })));
+            }
+        }
+    }
+
+    /// Every action instance on a page, by context.
+    fn instances(page: &config::Page) -> HashMap<String, (InputId, ActionInstance)> {
+        page.keys
+            .iter()
+            .map(|(k, s)| (InputId::Key(*k), s))
+            .chain(page.dials.iter().map(|(d, s)| (InputId::Dial(*d), s)))
+            .flat_map(|(input, slot)| slot.actions.iter().map(move |a| (a.context.clone(), (input, a.clone()))))
+            .collect()
+    }
+
+    async fn put_page(&mut self, name: String, mut page: config::Page) -> Result<config::Page, String> {
+        if !config::valid_page_name(&name) {
+            return Err(format!("invalid page name {name:?}"));
+        }
+        config::assign_contexts(&mut page);
+        let visible = name == self.current;
+        let old = self.cfg.pages.get(&name).map(Self::instances).unwrap_or_default();
+        let new = Self::instances(&page);
+
+        // Tell plugins about what changed on the visible page, like Elgato's app does.
+        if visible {
+            for (ctx, (input, a)) in &old {
+                let moved = new.get(ctx).is_none_or(|(i, n)| *i != *input || n.uuid != a.uuid);
+                if moved && self.is_plugin(a) {
+                    self.send_plugin("willDisappear", a, *input, json!({}));
+                }
+            }
+        }
+        for ctx in old.keys().filter(|c| !new.contains_key(*c)) {
+            self.live.remove(ctx);
+        }
+        self.cfg.pages.insert(name.clone(), page.clone());
+        self.save_page(&name);
+        self.rebuild_index();
+        if visible {
+            for (ctx, (input, a)) in &new {
+                if !self.is_plugin(a) {
+                    continue;
+                }
+                match old.get(ctx) {
+                    Some((i, o)) if *i == *input && o.uuid == a.uuid => {
+                        if o.settings != a.settings {
+                            self.send_plugin("didReceiveSettings", a, *input, json!({}));
+                        }
+                    }
+                    _ => {
+                        self.host.register_context(ctx, &self.serial, &a.uuid);
+                        self.send_plugin("willAppear", a, *input, json!({}));
+                    }
+                }
+            }
+            let page_brightness = page.brightness;
+            let _ = self.deck.set_brightness(page_brightness.unwrap_or(self.brightness)).await;
+            for k in 0..self.kind.key_count() {
+                self.dirty.insert(InputId::Key(k));
+            }
+            for d in 0..self.kind.encoder_count() {
+                self.dirty.insert(InputId::Dial(d));
+            }
+        }
+        self.hub.emit(json!({ "type": "config", "serial": self.serial, "page": name }));
+        Ok(page)
+    }
+
+    async fn delete_page(&mut self, name: &str) -> Result<(), String> {
+        if !self.cfg.pages.contains_key(name) {
+            return Err(format!("no page {name:?}"));
+        }
+        if self.cfg.pages.len() == 1 {
+            return Err("can't delete the only page".into());
+        }
+        self.cfg.pages.remove(name);
+        let _ = std::fs::remove_file(self.cfg.dir.join("pages").join(format!("{name}.json")));
+        self.history.retain(|p| p != name);
+        if self.cfg.profile.default_page == name {
+            self.cfg.profile.default_page = self.cfg.pages.keys().next().cloned().unwrap_or_default();
+            let _ = config::write_json(&self.cfg.dir.join("profile.json"), &self.cfg.profile);
+        }
+        self.rebuild_index();
+        if self.current == name {
+            self.current = self.cfg.profile.default_page.clone();
+            self.enter_page(None).await;
+        }
+        self.hub.emit(json!({ "type": "config", "serial": self.serial }));
+        Ok(())
+    }
+
+    fn rename_page(&mut self, from: &str, to: &str) -> Result<(), String> {
+        if !config::valid_page_name(to) {
+            return Err(format!("invalid page name {to:?}"));
+        }
+        if self.cfg.pages.contains_key(to) {
+            return Err(format!("a page named {to:?} already exists"));
+        }
+        let page = self.cfg.pages.remove(from).ok_or_else(|| format!("no page {from:?}"))?;
+        self.cfg.pages.insert(to.to_string(), page);
+        let pages_dir = self.cfg.dir.join("pages");
+        let _ = std::fs::rename(pages_dir.join(format!("{from}.json")), pages_dir.join(format!("{to}.json")));
+
+        // Keep page links pointing at the renamed page.
+        let mut touched = Vec::new();
+        for (name, page) in self.cfg.pages.iter_mut() {
+            for slot in page.keys.values_mut().chain(page.dials.values_mut()) {
+                for a in &mut slot.actions {
+                    if a.uuid == actions::PAGE && a.settings.get("page").and_then(Value::as_str) == Some(from) {
+                        a.settings["page"] = json!(to);
+                        touched.push(name.clone());
+                    }
+                }
+            }
+        }
+        touched.dedup();
+        for name in touched {
+            self.save_page(&name);
+        }
+        if self.cfg.profile.default_page == from {
+            self.cfg.profile.default_page = to.to_string();
+            let _ = config::write_json(&self.cfg.dir.join("profile.json"), &self.cfg.profile);
+        }
+        if self.current == from {
+            self.current = to.to_string();
+        }
+        for p in &mut self.history {
+            if p == from {
+                *p = to.to_string();
+            }
+        }
+        self.rebuild_index();
+        self.hub.emit(json!({ "type": "config", "serial": self.serial }));
+        Ok(())
+    }
+
     // ------------------------------------------------------------ navigation
 
     async fn apply(&mut self, effect: Effect) {
@@ -607,6 +816,7 @@ impl DeckActor {
 
     async fn enter_page(&mut self, previous: Option<String>) {
         tracing::info!("[{}] page {}", self.serial, self.current);
+        self.hub.emit(json!({ "type": "page", "serial": self.serial, "page": self.current }));
         if let Some(prev) = previous {
             self.appear(&prev, "willDisappear", None);
         }
@@ -730,12 +940,36 @@ impl DeckActor {
     }
 
     async fn draw(&self, input: InputId) {
-        let action = self.slot(&self.current, input).and_then(Slot::display_action);
+        let Some(img) = self.render(&self.current, input) else { return };
+        match input {
+            InputId::Key(k) => {
+                if let Err(e) = self.deck.set_button_image(k, img).await {
+                    tracing::warn!("key {k}: {e}");
+                }
+            }
+            InputId::Dial(d) => {
+                let seg = img.width() as u16;
+                match ImageRect::from_image_async(img) {
+                    Ok(rect) => {
+                        if let Err(e) = self.deck.write_lcd(d as u16 * seg, 0, &rect).await {
+                            tracing::warn!("lcd {d}: {e}");
+                        }
+                    }
+                    Err(e) => tracing::warn!("lcd encode: {e}"),
+                }
+            }
+        }
+        self.hub.emit(json!({ "type": "render", "serial": self.serial, "input": input_name(input) }));
+    }
+
+    /// Renders one slot of any page as it would appear on the device.
+    fn render(&self, page: &str, input: InputId) -> Option<DynamicImage> {
+        let action = self.slot(page, input).and_then(Slot::display_action);
         if let Some(a) = action.filter(|a| a.uuid == actions::VOLUME) {
             let (icon, name, percent, muted) = self.volume_view(a);
             let flash = self.live.get(&a.context).and_then(|l| l.flash.map(|(f, _)| f));
-            match input {
-                InputId::Key(k) => {
+            return match input {
+                InputId::Key(_) => {
                     let size = self.kind.key_image_format().size.0 as u32;
                     let mut st = State { image: Some(icon), ..Default::default() };
                     let text = match percent {
@@ -744,31 +978,24 @@ impl DeckActor {
                         None => name,
                     };
                     st.labels.insert(LabelPos::Bottom, Label { text, ..Default::default() });
-                    let _ = self.deck.set_button_image(k, self.renderer.render_key(size, Some(&st), flash)).await;
+                    Some(self.renderer.render_key(size, Some(&st), flash))
                 }
-                InputId::Dial(d) => {
-                    let Some((w, h)) = self.kind.lcd_strip_size() else { return };
+                InputId::Dial(_) => {
+                    let (w, h) = self.kind.lcd_strip_size()?;
                     let seg = (w / self.kind.encoder_count() as usize) as u32;
-                    let img = self.renderer.render_volume(seg, h as u32, &icon, &name, percent, muted, flash);
-                    if let Ok(rect) = ImageRect::from_image_async(img) {
-                        let _ = self.deck.write_lcd(d as u16 * seg as u16, 0, &rect).await;
-                    }
+                    Some(self.renderer.render_volume(seg, h as u32, &icon, &name, percent, muted, flash))
                 }
-            }
-            return;
+            };
         }
         let state = action.map(|a| self.resolve_state(a));
         let flash = action.and_then(|a| self.live.get(&a.context)).and_then(|l| l.flash.map(|(f, _)| f));
         match input {
-            InputId::Key(k) => {
+            InputId::Key(_) => {
                 let size = self.kind.key_image_format().size.0 as u32;
-                let img = self.renderer.render_key(size, state.as_ref(), flash);
-                if let Err(e) = self.deck.set_button_image(k, img).await {
-                    tracing::warn!("key {k}: {e}");
-                }
+                Some(self.renderer.render_key(size, state.as_ref(), flash))
             }
-            InputId::Dial(d) => {
-                let Some((w, h)) = self.kind.lcd_strip_size() else { return };
+            InputId::Dial(_) => {
+                let (w, h) = self.kind.lcd_strip_size()?;
                 let seg = (w / self.kind.encoder_count() as usize) as u32;
                 let img = match action.and_then(|a| Some((a, self.host.action(&a.uuid)?))) {
                     // Key-only actions on a dial: show their key picture big, with the title beside it.
@@ -813,14 +1040,7 @@ impl DeckActor {
                     }
                     None => self.renderer.render_dial(seg, h as u32, state.as_ref()),
                 };
-                match ImageRect::from_image_async(img) {
-                    Ok(rect) => {
-                        if let Err(e) = self.deck.write_lcd(d as u16 * seg as u16, 0, &rect).await {
-                            tracing::warn!("lcd {d}: {e}");
-                        }
-                    }
-                    Err(e) => tracing::warn!("lcd encode: {e}"),
-                }
+                Some(img)
             }
         }
     }
@@ -832,4 +1052,21 @@ fn volume_settings(a: &ActionInstance) -> (String, String, i32) {
     let kind = if s("kind") == "source" { "source".to_string() } else { "sink".to_string() };
     let step = a.settings.get("step").and_then(Value::as_i64).unwrap_or(2) as i32;
     (s("device"), kind, step)
+}
+
+pub fn input_name(input: InputId) -> String {
+    match input {
+        InputId::Key(k) => format!("key-{k}"),
+        InputId::Dial(d) => format!("dial-{d}"),
+    }
+}
+
+pub fn parse_input(s: &str) -> Option<InputId> {
+    let (kind, n) = s.split_once('-')?;
+    let n: u8 = n.parse().ok()?;
+    match kind {
+        "key" => Some(InputId::Key(n)),
+        "dial" => Some(InputId::Dial(n)),
+        _ => None,
+    }
 }

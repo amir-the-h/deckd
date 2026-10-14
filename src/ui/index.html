@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>deckd</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo"></span>deckd</div>
+  <select id="device" title="Device"></select>
+  <div class="spacer"></div>
+  <span id="status" class="status">connecting…</span>
+</header>
+
+<main class="layout">
+  <aside class="pages panel">
+    <div class="panel-head">
+      <h2>Pages</h2>
+      <button id="page-add" class="icon-btn" title="New page">+</button>
+    </div>
+    <ul id="page-list" class="page-list"></ul>
+    <div class="profile">
+      <label>Brightness <span id="brightness-value"></span>
+        <input id="brightness" type="range" min="0" max="100">
+      </label>
+    </div>
+  </aside>
+
+  <section class="stage">
+    <div class="stage-head">
+      <h1 id="page-title">—</h1>
+      <div class="page-actions">
+        <span id="on-deck" class="badge">On deck</span>
+        <button id="show-on-deck" class="btn">Show on deck</button>
+        <button id="page-default" class="btn">Make default</button>
+        <button id="page-rename" class="btn">Rename</button>
+        <button id="page-delete" class="btn danger">Delete</button>
+      </div>
+    </div>
+    <div id="deck" class="deck"></div>
+    <p class="hint">Drag an action onto a key or dial. Drag between slots to move them. Click a slot to edit it.</p>
+  </section>
+
+  <aside class="side panel">
+    <div class="tabs">
+      <button class="tab active" data-tab="library">Actions</button>
+      <button class="tab" data-tab="inspector">Inspector</button>
+    </div>
+    <div id="tab-library" class="tab-body">
+      <input id="search" class="search" type="search" placeholder="Search actions">
+      <div id="library"></div>
+    </div>
+    <div id="tab-inspector" class="tab-body hidden">
+      <div id="inspector" class="inspector"><p class="empty">Select a key or dial.</p></div>
+    </div>
+  </aside>
+</main>
+
+<div id="modal" class="modal hidden">
+  <form id="modal-form" class="modal-card">
+    <h3 id="modal-title"></h3>
+    <input id="modal-input" autocomplete="off">
+    <div class="modal-actions">
+      <button type="button" id="modal-cancel" class="btn">Cancel</button>
+      <button type="submit" class="btn primary">OK</button>
+    </div>
+  </form>
+</div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

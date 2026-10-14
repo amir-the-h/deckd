@@ -21,8 +21,6 @@ struct RawManifest {
     author: String,
     #[serde(default)]
     icon: String,
-    #[serde(default)]
-    category: Option<String>,
     code_path: Option<String>,
     code_path_lin: Option<String>,
     code_path_win: Option<String>,
@@ -94,11 +92,9 @@ pub struct PluginInfo {
     pub name: String,
     pub version: String,
     pub author: String,
-    pub category: Option<String>,
     pub icon: Option<String>,
     pub dir: PathBuf,
     pub runtime: Option<Runtime>,
-    pub property_inspector: Option<PathBuf>,
     pub actions: Vec<ActionInfo>,
 }
 
@@ -161,11 +157,9 @@ pub fn load(dir: &Path) -> Result<PluginInfo> {
         name: raw.name,
         version: raw.version,
         author: raw.author,
-        category: raw.category,
         icon: resolve_image(dir, &raw.icon),
         dir: dir.to_path_buf(),
         runtime,
-        property_inspector: plugin_pi,
         actions,
     })
 }

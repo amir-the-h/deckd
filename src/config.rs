@@ -95,8 +95,9 @@ pub struct ActionInstance {
     pub states: Vec<State>,
     #[serde(skip_serializing_if = "is_zero")]
     pub state: usize,
-    /// Opaque per-instance id handed to plugins. Generated on load.
-    #[serde(skip)]
+    /// Opaque per-instance id handed to plugins. Stable across restarts, like
+    /// Elgato's, so plugins can key state on it.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub context: String,
 }
 
@@ -204,10 +205,8 @@ pub fn load_device(serial: &str) -> Result<DeviceConfig> {
             if path.extension().is_some_and(|e| e == "json") {
                 let name = path.file_stem().unwrap().to_string_lossy().into_owned();
                 let mut page: Page = read_json(&path)?;
-                for slot in page.keys.values_mut().chain(page.dials.values_mut()) {
-                    for action in &mut slot.actions {
-                        action.context = uuid::Uuid::new_v4().simple().to_string();
-                    }
+                if assign_contexts(&mut page) {
+                    write_json(&path, &page)?;
                 }
                 pages.insert(name, page);
             }
@@ -217,4 +216,23 @@ pub fn load_device(serial: &str) -> Result<DeviceConfig> {
         pages.insert(profile.default_page.clone(), Page::default());
     }
     Ok(DeviceConfig { dir, profile, pages })
+}
+
+/// Gives every action instance without one a fresh context. Returns whether any changed.
+pub fn assign_contexts(page: &mut Page) -> bool {
+    let mut changed = false;
+    for slot in page.keys.values_mut().chain(page.dials.values_mut()) {
+        for action in &mut slot.actions {
+            if action.context.is_empty() {
+                action.context = uuid::Uuid::new_v4().simple().to_string();
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Page names become file names; keep them to something safe.
+pub fn valid_page_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 64 && !name.starts_with('.') && !name.contains(['/', '\\', '\0'])
 }

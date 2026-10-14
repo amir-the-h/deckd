@@ -1,0 +1,338 @@
+//! JSON API behind the web UI.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use axum::body::Bytes;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path as UrlPath, Query, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, put};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use tokio::sync::oneshot;
+
+use crate::audio::AudioWatch;
+use crate::config::{self, Page, Profile};
+use crate::device::parse_input;
+use crate::hub::{Hub, UiCmd};
+use crate::plugins::{self, Host};
+use crate::render::icons;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub host: Arc<Host>,
+    pub hub: Arc<Hub>,
+    pub audio: AudioWatch,
+}
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/devices", get(devices))
+        .route("/api/devices/{serial}", get(snapshot))
+        .route("/api/devices/{serial}/pages/{name}", put(put_page).delete(delete_page))
+        .route("/api/devices/{serial}/pages/{name}/rename", post(rename_page))
+        .route("/api/devices/{serial}/switch", post(switch_page))
+        .route("/api/devices/{serial}/profile", put(set_profile))
+        .route("/api/devices/{serial}/render/{page}/{input}", get(render))
+        .route("/api/devices/{serial}/inspector/{context}/{op}", post(inspector))
+        .route("/api/actions", get(catalog))
+        .route("/api/audio", get(audio_devices))
+        .route("/api/icons", get(list_icons).post(upload_icon))
+        .route("/api/events", get(events))
+        .route("/files", get(file))
+}
+
+type ApiResult<T> = Result<T, (StatusCode, String)>;
+
+fn not_found(what: &str) -> (StatusCode, String) {
+    (StatusCode::NOT_FOUND, format!("{what} not found"))
+}
+
+fn bad(e: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, e.to_string())
+}
+
+/// Sends a command to a deck's actor and waits for the reply.
+async fn ask<T>(s: &AppState, serial: &str, make: impl FnOnce(oneshot::Sender<T>) -> UiCmd) -> ApiResult<T> {
+    let deck = s.hub.deck(serial).ok_or_else(|| not_found("device"))?;
+    let (tx, rx) = oneshot::channel();
+    deck.tx.send(make(tx)).map_err(|_| not_found("device"))?;
+    rx.await.map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "device went away".into()))
+}
+
+async fn devices(State(s): State<AppState>) -> Json<Value> {
+    let list: Vec<Value> = s
+        .hub
+        .decks()
+        .into_iter()
+        .map(|(serial, d)| {
+            let (rows, cols) = d.kind.key_layout();
+            json!({
+                "serial": serial,
+                "kind": format!("{:?}", d.kind),
+                "rows": rows,
+                "columns": cols,
+                "keys": d.kind.key_count(),
+                "dials": d.kind.encoder_count(),
+                "lcd": d.kind.lcd_strip_size(),
+                "keySize": d.kind.key_image_format().size.0,
+            })
+        })
+        .collect();
+    Json(json!(list))
+}
+
+async fn snapshot(State(s): State<AppState>, UrlPath(serial): UrlPath<String>) -> ApiResult<Json<Value>> {
+    let snap = ask(&s, &serial, UiCmd::Snapshot).await?;
+    Ok(Json(serde_json::to_value(snap).unwrap()))
+}
+
+async fn put_page(State(s): State<AppState>, UrlPath((serial, name)): UrlPath<(String, String)>, Json(page): Json<Page>) -> ApiResult<Json<Page>> {
+    let page = ask(&s, &serial, |reply| UiCmd::PutPage { name, page, reply }).await?.map_err(bad)?;
+    Ok(Json(page))
+}
+
+async fn delete_page(State(s): State<AppState>, UrlPath((serial, name)): UrlPath<(String, String)>) -> ApiResult<StatusCode> {
+    ask(&s, &serial, |reply| UiCmd::DeletePage { name, reply }).await?.map_err(bad)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct RenameBody {
+    to: String,
+}
+
+async fn rename_page(State(s): State<AppState>, UrlPath((serial, from)): UrlPath<(String, String)>, Json(b): Json<RenameBody>) -> ApiResult<StatusCode> {
+    ask(&s, &serial, |reply| UiCmd::RenamePage { from, to: b.to, reply }).await?.map_err(bad)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct SwitchBody {
+    page: String,
+}
+
+async fn switch_page(State(s): State<AppState>, UrlPath(serial): UrlPath<String>, Json(b): Json<SwitchBody>) -> ApiResult<StatusCode> {
+    let deck = s.hub.deck(&serial).ok_or_else(|| not_found("device"))?;
+    let _ = deck.tx.send(UiCmd::Switch { page: b.page });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_profile(State(s): State<AppState>, UrlPath(serial): UrlPath<String>, Json(profile): Json<Profile>) -> ApiResult<StatusCode> {
+    ask(&s, &serial, |reply| UiCmd::SetProfile { profile, reply }).await?.map_err(bad)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn render(State(s): State<AppState>, UrlPath((serial, page, input)): UrlPath<(String, String, String)>) -> ApiResult<Response> {
+    let input = parse_input(&input).ok_or_else(|| bad("bad input"))?;
+    let png = ask(&s, &serial, |reply| UiCmd::Render { page, input, reply }).await?.ok_or_else(|| not_found("slot"))?;
+    Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], png).into_response())
+}
+
+/// Everything a property inspector page needs to call `connectElgatoStreamDeckSocket`.
+async fn inspector(State(s): State<AppState>, UrlPath((serial, context, op)): UrlPath<(String, String, String)>) -> ApiResult<Json<Value>> {
+    let open = op == "open";
+    let action_info = ask(&s, &serial, |reply| UiCmd::Inspector { context: context.clone(), open, reply }).await?.map_err(bad)?;
+    if !open {
+        return Ok(Json(json!({})));
+    }
+    let uuid = action_info["action"].as_str().unwrap_or_default().to_string();
+    let action = s.host.action(&uuid).ok_or_else(|| not_found("action"))?;
+    let url = action.property_inspector.as_deref().and_then(plugin_url);
+    Ok(Json(json!({
+        "url": url,
+        "port": s.host.port(),
+        "uuid": context,
+        "registerEvent": "registerPropertyInspector",
+        "info": s.host.app_info(&action.plugin),
+        "actionInfo": action_info,
+    })))
+}
+
+/// Built-in actions, described the same way as plugin actions.
+fn builtins() -> Vec<Value> {
+    let svg = |s: &str| format!("data:image/svg+xml;base64,{}", base64_encode(s));
+    let icon = |path: &str| svg(&format!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#fff" d="{path}"/></svg>"##));
+    vec![
+        json!({ "uuid": "deckd.page", "name": "Switch Page", "tooltip": "Go to another page, or back", "keypad": true, "encoder": true,
+                "icon": icon("M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z") }),
+        json!({ "uuid": "deckd.command", "name": "Run Command", "tooltip": "Run a shell command", "keypad": true, "encoder": true,
+                "icon": icon("M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 14H4V8h16v10zM6 10l3 3-3 3 1.4 1.4L11.8 13 7.4 8.6zM12 15h6v2h-6z") }),
+        json!({ "uuid": "deckd.volume", "name": "Volume", "tooltip": "Audio device volume and mute", "keypad": true, "encoder": true,
+                "icon": svg(icons::SPEAKER) }),
+        json!({ "uuid": "deckd.dial", "name": "Dial Commands", "tooltip": "Run commands when a dial is turned, pushed or touched", "keypad": false, "encoder": true,
+                "icon": icon("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm1-13h-2v6l5.2 3.2 1-1.6-4.2-2.5z") }),
+        json!({ "uuid": "deckd.brightness", "name": "Brightness", "tooltip": "Change the deck's brightness", "keypad": true, "encoder": true,
+                "icon": icon("M20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12 20 8.69zM12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12z") }),
+    ]
+}
+
+async fn catalog(State(s): State<AppState>) -> Json<Value> {
+    let mut groups = vec![json!({ "plugin": "deckd", "name": "Built-in", "actions": builtins() })];
+    for p in s.host.plugins.values() {
+        let runnable = p.runtime.is_some();
+        let actions: Vec<Value> = p
+            .actions
+            .iter()
+            .filter(|a| a.visible)
+            .map(|a| {
+                json!({
+                    "uuid": a.uuid,
+                    "name": a.name,
+                    "tooltip": a.tooltip,
+                    "keypad": a.keypad,
+                    "encoder": a.encoder,
+                    "icon": a.icon.as_deref().and_then(image_url),
+                    "inspector": a.property_inspector.is_some(),
+                })
+            })
+            .collect();
+        groups.push(json!({
+            "plugin": p.uuid,
+            "name": p.name,
+            "author": p.author,
+            "version": p.version,
+            "icon": p.icon.as_deref().and_then(image_url),
+            "runnable": runnable,
+            "actions": actions,
+        }));
+    }
+    Json(json!(groups))
+}
+
+async fn audio_devices(State(s): State<AppState>) -> Json<Value> {
+    let state = s.audio.borrow().clone();
+    let mut list: Vec<Value> = state
+        .devices
+        .iter()
+        .map(|(name, v)| {
+            json!({
+                "name": name,
+                "description": v.description,
+                "kind": if name.starts_with("alsa_input") || name.contains(".monitor") || name.contains("input") { "source" } else { "sink" },
+                "monitor": name.ends_with(".monitor"),
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| a["description"].as_str().cmp(&b["description"].as_str()));
+    Json(json!(list))
+}
+
+fn icons_dir() -> PathBuf {
+    config::config_dir().join("icons")
+}
+
+async fn list_icons() -> Json<Value> {
+    let mut list: Vec<Value> = std::fs::read_dir(icons_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_image(p))
+        .map(|p| json!({ "path": p.to_string_lossy(), "url": image_url(&p.to_string_lossy()) }))
+        .collect();
+    list.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    Json(json!(list))
+}
+
+#[derive(Deserialize)]
+struct UploadQuery {
+    name: String,
+}
+
+async fn upload_icon(Query(q): Query<UploadQuery>, body: Bytes) -> ApiResult<Json<Value>> {
+    let name = Path::new(&q.name).file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| bad("bad name"))?;
+    let path = icons_dir().join(&name);
+    if !is_image(&path) {
+        return Err(bad("only png, jpg, gif, svg and webp images"));
+    }
+    if body.len() > 8 << 20 {
+        return Err(bad("image too large"));
+    }
+    std::fs::create_dir_all(icons_dir()).map_err(bad)?;
+    std::fs::write(&path, &body).map_err(bad)?;
+    Ok(Json(json!({ "path": path.to_string_lossy(), "url": image_url(&path.to_string_lossy()) })))
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    path: String,
+}
+
+/// Serves images referenced by absolute path in the config, but only from deckd's own folders.
+async fn file(Query(q): Query<FileQuery>) -> ApiResult<Response> {
+    let path = std::fs::canonicalize(&q.path).map_err(|_| not_found("file"))?;
+    let root = std::fs::canonicalize(config::config_dir()).map_err(|_| not_found("file"))?;
+    if !path.starts_with(&root) || !is_image(&path) {
+        return Err((StatusCode::FORBIDDEN, "not allowed".into()));
+    }
+    let bytes = tokio::fs::read(&path).await.map_err(|_| not_found("file"))?;
+    Ok(([(header::CONTENT_TYPE, mime_for(&path))], bytes).into_response())
+}
+
+async fn events(State(s): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    let mut rx = s.hub.subscribe();
+    ws.on_upgrade(move |mut socket: WebSocket| async move {
+        loop {
+            tokio::select! {
+                msg = rx.recv() => match msg {
+                    Ok(text) => if socket.send(Message::Text(text.into())).await.is_err() { break },
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                },
+                incoming = socket.recv() => if !matches!(incoming, Some(Ok(_))) { break },
+            }
+        }
+    })
+}
+
+// ------------------------------------------------------------------ helpers
+
+fn plugin_url(path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(plugins::plugins_dir()).ok()?;
+    Some(format!("/plugins/{}", rel.to_string_lossy()))
+}
+
+/// A browser-loadable URL for an image reference from the config or a manifest.
+pub fn image_url(src: &str) -> Option<String> {
+    if src.starts_with("data:") || src.starts_with("http") {
+        return Some(src.to_string());
+    }
+    let p = Path::new(src);
+    plugin_url(p).or_else(|| Some(format!("/files?path={}", urlencode(src))))
+}
+
+fn is_image(p: &Path) -> bool {
+    matches!(
+        p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "svg" | "webp")
+    )
+}
+
+fn mime_for(p: &Path) -> &'static str {
+    match p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+fn base64_encode(s: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(s)
+}
