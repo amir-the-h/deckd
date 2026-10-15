@@ -164,6 +164,10 @@ textarea { width: 100%; min-height: 90px; font-family: ui-monospace, monospace; 
 .field input, .field select { width: 100%; }
 .row { display: flex; gap: 8px; align-items: center; }
 .row > * { flex: 1; }
+.color-row { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.color-row .field { flex: none; }
+.color-setting { display: flex; gap: 4px; align-items: center; }
+.color-setting input[type=color] { width: 40px; height: 28px; padding: 0; border: 0; background: none; }
 .labels-grid { display: grid; grid-template-columns: 58px 1fr 56px 34px; gap: 6px; align-items: center; }
 .labels-grid span { color: var(--muted); font-size: 12px; }
 .labels-grid input[type=color] { width: 34px; height: 30px; padding: 0; border: 0; background: none; }

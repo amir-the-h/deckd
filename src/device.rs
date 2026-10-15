@@ -18,7 +18,7 @@ use crate::layout::Layout;
 use crate::plugins::{Host, ToDeck};
 use crate::audio::{self, AudioWatch};
 use crate::hub::{Hub, UiCmd};
-use crate::render::{icons, Flash, Renderer};
+use crate::render::{icons, ClockColors, Flash, Renderer};
 use image::DynamicImage;
 
 const HOLD_THRESHOLD: Duration = Duration::from_millis(500);
@@ -383,7 +383,9 @@ impl DeckActor {
             "bottom" => LabelPos::Bottom,
             _ => default,
         };
-        // Users can still style the widget's main text through the matching label.
+        // A colour setting, falling back to `default` when unset.
+        let color = |k: &str, default: &str| a.settings.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or(default).to_string();
+        // Users can still style the widget's text through the matching label in Appearance.
         let styled = |p: LabelPos, text: String, size: f32, color: &str| {
             let u = user.labels.get(&p);
             Label {
@@ -399,7 +401,18 @@ impl DeckActor {
                 let now = chrono::Local::now();
                 if s("style") == "analog" {
                     let (w, h) = if matches!(input, InputId::Key(_)) { (key_size, key_size) } else { (seg_w, seg_h) };
-                    return (w > 0).then(|| self.renderer.render_analog_clock(w, h, now.hour(), now.minute(), now.second(), user.background.as_deref()));
+                    let d = ClockColors::default();
+                    let colors = ClockColors {
+                        face: color("face_color", &d.face),
+                        rim: color("rim_color", &d.rim),
+                        ticks: color("tick_color", &d.ticks),
+                        hour: color("hour_color", &d.hour),
+                        minute: color("minute_color", &d.minute),
+                        second: color("second_color", &d.second),
+                        show_seconds: a.settings.get("seconds").and_then(Value::as_bool).unwrap_or(true),
+                    };
+                    let time = (now.hour(), now.minute(), now.second());
+                    return (w > 0).then(|| self.renderer.render_analog_clock(w, h, time, user.background.as_deref(), &colors));
                 }
                 let fmt = if s("format").is_empty() { "%H:%M".to_string() } else { s("format") };
                 // Reject formats chrono can't handle instead of panicking mid-render.
@@ -408,7 +421,7 @@ impl DeckActor {
                     text = "bad format".into();
                 }
                 let mut st = State { image: user.image.clone(), background: user.background.clone(), ..Default::default() };
-                st.labels.insert(LabelPos::Center, styled(LabelPos::Center, text, 20.0, "#ffffff"));
+                st.labels.insert(LabelPos::Center, styled(LabelPos::Center, text, 20.0, &color("color", "#ffffff")));
                 for (p, l) in &user.labels {
                     if *p != LabelPos::Center {
                         st.labels.insert(*p, l.clone());
@@ -420,9 +433,9 @@ impl DeckActor {
                 let mut st = State { image: user.image.clone(), background: user.background.clone(), ..Default::default() };
                 if s("mode") == "toggle" {
                     st.labels = user.labels.clone();
-                    if st.image.is_none() && st.labels.is_empty() {
-                        st.labels.insert(LabelPos::Center, Label { text: "HUD".into(), size: Some(22.0), color: None });
-                        st.labels.insert(LabelPos::Bottom, Label { text: "MangoHud".into(), size: Some(11.0), color: Some("#8a8a8a".into()) });
+                    if st.image.is_none() && st.labels.values().all(|l| l.text.is_empty()) {
+                        st.labels.insert(LabelPos::Center, styled(LabelPos::Center, "HUD".into(), 22.0, &color("value_color", "#ffffff")));
+                        st.labels.insert(LabelPos::Bottom, styled(LabelPos::Bottom, "MangoHud".into(), 11.0, &color("label_color", "#8a8a8a")));
                     }
                     return draw(&st);
                 }
@@ -430,8 +443,8 @@ impl DeckActor {
                 let label = if s("label").is_empty() { field.to_uppercase().replace('_', " ") } else { s("label") };
                 let value = self.mango.as_ref().and_then(|m| m.get(&field)).map(|v| crate::widgets::mango_format(&field, *v)).unwrap_or_else(|| "—".into());
                 let (lp, vp) = (pos("label_pos", LabelPos::Top), pos("stat_pos", LabelPos::Center));
-                st.labels.insert(lp, styled(lp, label, 13.0, "#9a9a9a"));
-                st.labels.insert(vp, styled(vp, value, 24.0, "#ffffff"));
+                st.labels.insert(lp, styled(lp, label, 13.0, &color("label_color", "#9a9a9a")));
+                st.labels.insert(vp, styled(vp, value, 24.0, &color("value_color", "#ffffff")));
                 draw(&st)
             }
             actions::MEDIA => {
@@ -441,7 +454,7 @@ impl DeckActor {
                 let mut st = State { image: user.image.clone(), background: user.background.clone(), ..Default::default() };
                 match info {
                     None => {
-                        st.labels.insert(LabelPos::Center, Label { text: "No media".into(), size: Some(12.0), color: Some("#8a8a8a".into()) });
+                        st.labels.insert(LabelPos::Center, styled(LabelPos::Center, "No media".into(), 12.0, &color("artist_color", "#8a8a8a")));
                     }
                     Some(m) => {
                         if show_art && st.image.is_none() {
@@ -450,13 +463,15 @@ impl DeckActor {
                         let dial = matches!(input, InputId::Dial(_));
                         if show_title && !m.title.is_empty() {
                             let title: String = m.title.chars().take(if dial { 28 } else { 18 }).collect();
-                            st.labels.insert(if dial { LabelPos::Top } else { LabelPos::Bottom }, Label { text: title, size: Some(if dial { 11.0 } else { 10.0 }), color: None });
+                            let p = if dial { LabelPos::Top } else { LabelPos::Bottom };
+                            st.labels.insert(p, styled(p, title, if dial { 11.0 } else { 10.0 }, &color("title_color", "#ffffff")));
                         }
                         if dial && !m.artist.is_empty() {
-                            st.labels.insert(LabelPos::Center, Label { text: m.artist.chars().take(28).collect(), size: Some(10.0), color: Some("#b0b0b0".into()) });
+                            st.labels.insert(LabelPos::Center, styled(LabelPos::Center, m.artist.chars().take(28).collect(), 10.0, &color("artist_color", "#b0b0b0")));
                         }
                         if !m.playing {
-                            st.labels.insert(if dial { LabelPos::Bottom } else { LabelPos::Top }, Label { text: "Paused".into(), size: Some(9.0), color: Some("#f7821b".into()) });
+                            let p = if dial { LabelPos::Bottom } else { LabelPos::Top };
+                            st.labels.insert(p, styled(p, "Paused".into(), 9.0, &color("paused_color", "#f7821b")));
                         }
                     }
                 }
@@ -1253,9 +1268,7 @@ impl DeckActor {
             if user.background.is_some() {
                 st.background = user.background.clone();
             }
-            if !user.labels.is_empty() {
-                st.labels = user.labels.clone();
-            }
+            apply_user_labels(&mut st.labels, &user.labels);
         }
         if let Some(live) = self.live.get(&a.context) {
             if let Some(img) = live.images.get(&a.state) {
@@ -1273,8 +1286,8 @@ impl DeckActor {
                     // A null title restores the configured one.
                     None => {
                         st.labels = info.and_then(|i| i.states.get(a.state)).map(|s| s.labels.clone()).unwrap_or_default();
-                        if let Some(user) = a.current_state().filter(|u| !u.labels.is_empty()) {
-                            st.labels = user.labels.clone();
+                        if let Some(user) = a.current_state() {
+                            apply_user_labels(&mut st.labels, &user.labels);
                         }
                     }
                 }
@@ -1439,8 +1452,12 @@ impl DeckActor {
                             layout.apply(&l.feedback);
                         }
                         let st = state.as_ref();
-                        let title = st.and_then(|s| s.labels.values().next()).map(|l| l.text.clone()).unwrap_or_else(|| info.name.clone());
+                        let title = st.and_then(|s| s.labels.values().find(|l| !l.text.is_empty())).map(|l| l.text.clone()).unwrap_or_else(|| info.name.clone());
                         layout.set_default("title", Value::String(title));
+                        // A label colour chosen in Appearance wins over the plugin's.
+                        if let Some(c) = a.current_state().and_then(|u| u.labels.values().find_map(|l| l.color.clone())) {
+                            layout.set_prop("title", "color", Value::String(c));
+                        }
                         let user_image = a.current_state().and_then(|s| s.image.clone());
                         let icon = if live_image.is_some() || user_image.is_some() {
                             st.and_then(|s| s.image.clone())
@@ -1458,6 +1475,24 @@ impl DeckActor {
                 };
                 Some(img)
             }
+        }
+    }
+}
+
+/// Puts the user's labels over `labels`. Labels without text only restyle whatever
+/// ends up at their position, such as the manifest title or a plugin's live title.
+fn apply_user_labels(labels: &mut std::collections::BTreeMap<LabelPos, Label>, user: &std::collections::BTreeMap<LabelPos, Label>) {
+    if user.values().any(|l| !l.text.is_empty()) {
+        *labels = user.clone();
+        return;
+    }
+    for (pos, u) in user {
+        let l = labels.entry(*pos).or_default();
+        if u.size.is_some() {
+            l.size = u.size;
+        }
+        if u.color.is_some() {
+            l.color = u.color.clone();
         }
     }
 }

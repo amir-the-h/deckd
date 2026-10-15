@@ -104,6 +104,12 @@ impl Layout {
         }
     }
 
+    pub fn set_prop(&mut self, key: &str, prop: &str, value: Value) {
+        if let Some(item) = self.items.iter_mut().find(|i| i.key == key) {
+            item.props.insert(prop.into(), value);
+        }
+    }
+
     pub fn set_default(&mut self, key: &str, value: Value) {
         if let Some(item) = self.items.iter_mut().find(|i| i.key == key) {
             item.props.entry("value").or_insert(value);

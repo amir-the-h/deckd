@@ -709,6 +709,29 @@ function settingCheckbox(a, key, label, def) {
   return el("label", { class: "row", style: "justify-content:flex-start;gap:8px" }, box, el("span", { style: "flex:none" }, label));
 }
 
+const refreshSelSoon = debounce(() => refreshSlot(S.sel), 450);
+
+// Colour picker for a setting; "↺" clears it back to the built-in default.
+function settingColor(a, key, def) {
+  const input = el("input", { type: "color", value: a.settings?.[key] || def });
+  const reset = el("button", { class: "btn small", title: "Back to the default colour", type: "button" }, "↺");
+  const save = (v) => {
+    const act = curAction();
+    act.settings ||= {};
+    if (v === undefined) delete act.settings[key]; else act.settings[key] = v;
+    savePageSoon();
+    refreshSelSoon();
+  };
+  input.addEventListener("input", () => save(input.value));
+  reset.addEventListener("click", (e) => { e.preventDefault(); input.value = def; save(undefined); });
+  return el("span", { class: "color-setting" }, input, reset);
+}
+
+// A row of labelled colour pickers: [[key, label, default], ...].
+function colorRow(a, specs) {
+  return el("div", { class: "color-row" }, specs.map(([k, l, d]) => field(l, settingColor(a, k, d))));
+}
+
 function settingSelect(a, key, options, onChange) {
   const sel = el("select", {}, options.map(([v, label]) => el("option", { value: v }, label)));
   sel.value = a.settings?.[key] ?? options[0][0];
@@ -753,12 +776,18 @@ function renderSettings(box, keepPI) {
     box.append(field("Style", settingSelect(a, "style", [["digital", "Digital"], ["analog", "Analog"]], () => { renderInspector(); refreshSlot(S.sel); })));
     if (!analog) {
       box.append(field("Format", settingInput(a, "format", { placeholder: "%H:%M" })));
-      box.append(el("p", { class: "muted" }, "strftime codes: %H:%M → 14:05 · %I:%M %p → 02:05 PM · %d / %m → 15 / 10 · %a %d %b → Thu 15 Oct · \n for a new line. Style the text with the Center label in Appearance."));
+      box.append(colorRow(a, [["color", "Text", "#ffffff"]]));
+      box.append(el("p", { class: "muted" }, "strftime codes: %H:%M → 14:05 · %I:%M %p → 02:05 PM · %d / %m → 15 / 10 · %a %d %b → Thu 15 Oct · \n for a new line. Set the text size with the Center label in Appearance."));
+    } else {
+      box.append(settingCheckbox(a, "seconds", "Show the second hand", true));
+      box.append(colorRow(a, [["hour_color", "Hour hand", "#ffffff"], ["minute_color", "Minute hand", "#ffffff"], ["second_color", "Second hand", "#f7821b"]]));
+      box.append(colorRow(a, [["face_color", "Face", "#151515"], ["rim_color", "Rim", "#3a3a3a"], ["tick_color", "Ticks", "#cfcfcf"]]));
     }
   } else if (a.uuid === "deckd.media") {
     box.append(field("Player", settingInput(a, "player", { placeholder: "Any player (or e.g. spotify, chromium, firefox)" })));
     box.append(settingCheckbox(a, "art", "Show cover art", true));
     box.append(settingCheckbox(a, "title", "Show the track title", true));
+    box.append(colorRow(a, [["title_color", "Title", "#ffffff"], ["artist_color", "Artist", "#b0b0b0"], ["paused_color", "“Paused”", "#f7821b"]]));
     box.append(el("p", { class: "muted" }, "Press or tap to play/pause. On a dial, turn to skip tracks."));
   } else if (a.uuid === "deckd.mangohud") {
     const stat = a.settings?.mode !== "toggle";
@@ -770,6 +799,9 @@ function renderSettings(box, keepPI) {
       box.append(el("div", { class: "row" }, field("Label", settingInput(a, "label", { placeholder: "e.g. FPS" })), field("Label at", settingSelect(a, "label_pos", positions))));
       box.append(field("Value at", settingSelect(a, "stat_pos", [["center", "Middle"], ["top", "Top"], ["bottom", "Bottom"]])));
     }
+    box.append(colorRow(a, stat
+      ? [["label_color", "Label", "#9a9a9a"], ["value_color", "Value", "#ffffff"]]
+      : [["value_color", "“HUD”", "#ffffff"], ["label_color", "“MangoHud”", "#8a8a8a"]]));
     box.append(el("p", { class: "muted" }, "Needs MangoHud's control socket and logging enabled in MangoHud.conf (control=…/scmango-%p, output_folder=/tmp/sc_mangohud, autostart_log=1)."));
   } else if (meta.inspector) {
     const holder = el("div");
@@ -942,25 +974,24 @@ function renderAppearance(slot) {
   st0.labels ||= {};
   for (const pos of ["top", "center", "bottom"]) {
     const l = st0.labels[pos] || {};
-    const text = el("input", { value: l.text || "", placeholder: "Text" });
+    const text = el("input", { value: l.text || "", placeholder: "Text (optional)" });
     const size = el("input", { type: "number", value: l.size || "", placeholder: "16", min: 6, max: 60 });
     const color = el("input", { type: "color", value: l.color || "#ffffff" });
     const apply = () => {
       const st = curState();
       st.labels ||= {};
-      if (!text.value) { delete st.labels[pos]; }
-      else {
-        st.labels[pos] = { text: text.value };
-        if (size.value) st.labels[pos].size = Number(size.value);
-        if (color.value && color.value !== "#ffffff") st.labels[pos].color = color.value;
-      }
+      // Without text, size and colour still restyle whatever the action draws there.
+      const lbl = { text: text.value };
+      if (size.value) lbl.size = Number(size.value);
+      if (color.value && color.value !== "#ffffff") lbl.color = color.value;
+      if (lbl.text || lbl.size || lbl.color) st.labels[pos] = lbl; else delete st.labels[pos];
       touch(true);
     };
     for (const i of [text, size, color]) i.addEventListener("input", apply);
     grid2.append(el("span", {}, pos[0].toUpperCase() + pos.slice(1)), text, size, color);
   }
   box.append(field("Labels", grid2));
-  box.append(el("p", { class: "muted" }, "Plugins may replace the icon or title while running (e.g. to show a live state)."));
+  box.append(el("p", { class: "muted" }, "Leave the text empty to only change the size or colour of the action's own title. Plugins may replace the icon or title while running (e.g. to show a live state)."));
   return box;
 }
 

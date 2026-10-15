@@ -152,34 +152,38 @@ impl Renderer {
     }
 
     /// Analog clock face. Drawn fresh each time, without touching the image cache.
-    pub fn render_analog_clock(&self, w: u32, h: u32, hour: u32, minute: u32, second: u32, background: Option<&str>) -> DynamicImage {
+    pub fn render_analog_clock(&self, w: u32, h: u32, (hour, minute, second): (u32, u32, u32), background: Option<&str>, colors: &ClockColors) -> DynamicImage {
         let bg = background.and_then(parse_color).unwrap_or(Rgba([0, 0, 0, 255]));
         let mut canvas = RgbaImage::from_pixel(w, h, bg);
         let side = w.min(h);
         let (cx, cy, r) = (50.0, 50.0, 46.0);
+        let ticks_c = svg_color(&colors.ticks);
         let mut ticks = String::new();
         for i in 0..12 {
             let a = i as f32 * std::f32::consts::PI / 6.0;
             let (inner, width) = if i % 3 == 0 { (r - 10.0, 3.5) } else { (r - 6.0, 2.0) };
             ticks += &format!(
-                r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="#cfcfcf" stroke-width="{width}" stroke-linecap="round"/>"##,
+                r#"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{ticks_c}" stroke-width="{width}" stroke-linecap="round"/>"#,
                 cx + inner * a.sin(), cy - inner * a.cos(), cx + (r - 2.0) * a.sin(), cy - (r - 2.0) * a.cos()
             );
         }
         let hand = |angle: f32, len: f32, width: f32, color: &str| {
             format!(
-                r#"<line x1="{cx}" y1="{cy}" x2="{:.2}" y2="{:.2}" stroke="{color}" stroke-width="{width}" stroke-linecap="round"/>"#,
-                cx + len * angle.sin(), cy - len * angle.cos()
+                r#"<line x1="{cx}" y1="{cy}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="{width}" stroke-linecap="round"/>"#,
+                cx + len * angle.sin(), cy - len * angle.cos(), svg_color(color)
             )
         };
         let tau = std::f32::consts::TAU;
         let m = minute as f32 + second as f32 / 60.0;
         let hr = (hour % 12) as f32 + m / 60.0;
+        let second_hand = if colors.show_seconds { hand(second as f32 / 60.0 * tau, 38.0, 1.5, &colors.second) } else { String::new() };
         let svg = format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="{r}" fill="#151515" stroke="#3a3a3a" stroke-width="2"/>{ticks}{}{}{}<circle cx="50" cy="50" r="3.5" fill="#f7821b"/></svg>"##,
-            hand(hr / 12.0 * tau, 24.0, 5.0, "#ffffff"),
-            hand(m / 60.0 * tau, 36.0, 3.5, "#ffffff"),
-            hand(second as f32 / 60.0 * tau, 38.0, 1.5, "#f7821b"),
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="{r}" fill="{}" stroke="{}" stroke-width="2"/>{ticks}{}{}{second_hand}<circle cx="50" cy="50" r="3.5" fill="{}"/></svg>"#,
+            svg_color(&colors.face),
+            svg_color(&colors.rim),
+            hand(hr / 12.0 * tau, 24.0, 5.0, &colors.hour),
+            hand(m / 60.0 * tau, 36.0, 3.5, &colors.minute),
+            svg_color(if colors.show_seconds { &colors.second } else { &colors.minute }),
         );
         if let Ok(face) = render_svg_uncached(&svg, side) {
             imageops::overlay(&mut canvas, &face, ((w - face.width()) / 2) as i64, ((h - face.height()) / 2) as i64);
@@ -284,15 +288,24 @@ impl Renderer {
     }
 
     fn draw_flash(&self, canvas: &mut RgbaImage, flash: Flash) {
-        let (tint, text) = match flash {
-            Flash::Alert => (Rgba([200, 30, 30, 170]), "!"),
-            Flash::Ok => (Rgba([30, 170, 60, 170]), "OK"),
-        };
-        let overlay = RgbaImage::from_pixel(canvas.width(), canvas.height(), tint);
-        imageops::overlay(canvas, &overlay, 0, 0);
-        let h = canvas.height() as f32;
-        let label = Label { text: text.into(), ..Default::default() };
-        self.draw_text(canvas, &label, h * 0.45, 0.0, canvas.width() as f32, h * 0.25, Align::Center);
+        match flash {
+            Flash::Alert => {
+                let overlay = RgbaImage::from_pixel(canvas.width(), canvas.height(), Rgba([200, 30, 30, 170]));
+                imageops::overlay(canvas, &overlay, 0, 0);
+                let h = canvas.height() as f32;
+                let label = Label { text: "!".into(), ..Default::default() };
+                self.draw_text(canvas, &label, h * 0.45, 0.0, canvas.width() as f32, h * 0.25, Align::Center);
+            }
+            // A small check badge in the corner rather than covering the picture.
+            Flash::Ok => {
+                let side = (canvas.height().min(canvas.width()) as f32 * 0.3) as u32;
+                let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#1e9e46" stroke="#000" stroke-opacity=".5"/><path d="M6.5 12.5l3.5 3.5 7.5-8" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+                if let Ok(badge) = render_svg_uncached(svg, side) {
+                    let pad = (side / 6) as i64;
+                    imageops::overlay(canvas, &badge, canvas.width() as i64 - badge.width() as i64 - pad, pad);
+                }
+            }
+        }
     }
 
     /// Draws a possibly multi-line label anchored at `pos`, shrinking it if the lines don't fit.
@@ -392,6 +405,41 @@ impl Renderer {
         }
         cache.insert(key, img.clone());
         Some(img)
+    }
+}
+
+/// Colours of the analog clock, as CSS colours.
+#[derive(Debug, Clone)]
+pub struct ClockColors {
+    pub face: String,
+    pub rim: String,
+    pub ticks: String,
+    pub hour: String,
+    pub minute: String,
+    pub second: String,
+    pub show_seconds: bool,
+}
+
+impl Default for ClockColors {
+    fn default() -> Self {
+        Self {
+            face: "#151515".into(),
+            rim: "#3a3a3a".into(),
+            ticks: "#cfcfcf".into(),
+            hour: "#ffffff".into(),
+            minute: "#ffffff".into(),
+            second: "#f7821b".into(),
+            show_seconds: true,
+        }
+    }
+}
+
+/// A colour for SVG attributes; anything that isn't a plain colour becomes white.
+fn svg_color(c: &str) -> String {
+    match parse_color(c) {
+        Some(Rgba([r, g, b, a])) if a == 255 => format!("#{r:02x}{g:02x}{b:02x}"),
+        Some(Rgba([r, g, b, a])) => format!("rgba({r},{g},{b},{:.3})", a as f32 / 255.0),
+        None => "#ffffff".into(),
     }
 }
 
