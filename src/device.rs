@@ -1092,10 +1092,18 @@ impl DeckActor {
         match effect {
             Effect::SwitchPage(name) => {
                 // Navigating by hand ends any automatic switch, so focus changes won't undo it.
+                // Back history skips the auto page: it records the page the switcher left.
+                let origin = self.auto_origin().unwrap_or_else(|| self.current.clone());
                 self.clear_auto();
-                self.go_to(name).await;
+                self.go_to(name, Some(origin)).await;
             }
             Effect::Back => {
+                // From an auto page, "back" is the page it was switched from, not history.
+                if let Some(origin) = self.auto_origin() {
+                    self.clear_auto();
+                    self.go_to(origin, None).await;
+                    return;
+                }
                 self.clear_auto();
                 if let Some(prev) = self.history.pop() {
                     let old = std::mem::replace(&mut self.current, prev);
@@ -1133,18 +1141,30 @@ impl DeckActor {
         }
     }
 
-    async fn go_to(&mut self, name: String) {
+    /// Switches page, recording `record` as the back-history entry (None leaves history alone).
+    async fn go_to(&mut self, name: String, record: Option<String>) {
         if !self.cfg.pages.contains_key(&name) {
             tracing::warn!("no page named {name:?}");
             return;
         }
         if name != self.current {
             let prev = std::mem::replace(&mut self.current, name);
-            self.history.push(prev.clone());
-            if self.history.len() > 32 {
-                self.history.remove(0);
+            if let Some(entry) = record.filter(|e| *e != self.current && self.cfg.pages.contains_key(e)) {
+                self.history.push(entry);
+                if self.history.len() > 32 {
+                    self.history.remove(0);
+                }
             }
             self.enter_page(Some(prev)).await;
+        }
+    }
+
+    /// The page to treat as "where we are" for back history: the current page, or, while the
+    /// auto-switcher has us on one of its pages, the page it switched away from.
+    fn auto_origin(&self) -> Option<String> {
+        match &self.auto_page {
+            Some(page) if *page == self.current => self.auto_return.clone(),
+            _ => None,
         }
     }
 
@@ -1197,7 +1217,7 @@ impl DeckActor {
                     None => tracing::info!("[{}] focus {:?} -> page {page}", self.serial, f.class),
                 }
                 self.auto_page = Some(page.clone());
-                self.go_to(page).await;
+                self.go_to(page, None).await;
             }
             Some(_) => {}
             None => {
@@ -1207,7 +1227,7 @@ impl DeckActor {
                 if !stay && self.current == page {
                     if let Some(back) = back.filter(|b| self.cfg.pages.contains_key(b)) {
                         tracing::info!("[{}] focus left {page}; back to {back}", self.serial);
-                        self.go_to(back).await;
+                        self.go_to(back, None).await;
                     }
                 }
             }
