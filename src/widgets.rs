@@ -24,8 +24,14 @@ pub const MANGO_FIELDS: &[&str] = &[
 
 /// Latest stats from the most recently written MangoHud log, if a game is running.
 pub fn mango_stats() -> Option<HashMap<String, f64>> {
-    let newest = std::fs::read_dir(MANGO_LOG_DIR)
-        .ok()?
+    let dir = match std::fs::read_dir(MANGO_LOG_DIR) {
+        Ok(dir) => dir,
+        Err(_) => {
+            ensure_mango_log_dir();
+            return None;
+        }
+    };
+    let newest = dir
         .flatten()
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .filter(|(_, p)| p.extension().is_some_and(|x| x == "csv"))
@@ -50,6 +56,14 @@ pub fn mango_stats() -> Option<HashMap<String, f64>> {
     let line = tail.lines().rev().find(|l| l.split(',').count() == keys.len() && !l.starts_with("fps"))?;
     let values = line.split(',').map(|v| v.trim().parse::<f64>().unwrap_or(0.0));
     Some(keys.into_iter().zip(values).collect())
+}
+
+/// MangoHud won't create its output folder and silently drops every log line without it
+/// ("Failed to write log file"); /tmp is wiped on boot, so make sure it's there.
+pub fn ensure_mango_log_dir() {
+    if let Err(e) = std::fs::create_dir_all(MANGO_LOG_DIR) {
+        tracing::warn!("can't create {MANGO_LOG_DIR} for MangoHud logs: {e}");
+    }
 }
 
 pub fn mango_format(field: &str, v: f64) -> String {

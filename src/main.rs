@@ -50,6 +50,7 @@ async fn main() -> Result<()> {
             tracing::info!("listening on http://127.0.0.1:{port}");
             let hub = Arc::new(hub::Hub::new());
             let audio = audio::start();
+            widgets::ensure_mango_log_dir();
             let app = server::router(api::AppState { host: host.clone(), hub: hub.clone(), audio: audio.clone() });
             tokio::select! {
                 r = device::run_manager(renderer, host, hub, audio, focus::start()) => r?,
