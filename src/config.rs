@@ -82,6 +82,9 @@ pub struct AutoSwitch {
     pub class: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub title: String,
+    /// Only match windows of a game launched by Steam (native or Proton), whatever their class.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub steam_game: bool,
     /// Stay on the page after the window loses focus instead of going back.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stay: bool,
@@ -89,7 +92,7 @@ pub struct AutoSwitch {
 
 impl Default for AutoSwitch {
     fn default() -> Self {
-        Self { enabled: true, class: String::new(), title: String::new(), stay: false }
+        Self { enabled: true, class: String::new(), title: String::new(), steam_game: false, stay: false }
     }
 }
 

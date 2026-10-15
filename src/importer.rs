@@ -117,6 +117,7 @@ fn auto_switch(v: Option<&Value>) -> Option<config::AutoSwitch> {
         enabled: v.get("enable").and_then(Value::as_bool).unwrap_or(false),
         class: s("wm_class"),
         title: s("title"),
+        steam_game: false,
         stay: false,
     };
     (!rule.class.is_empty() || !rule.title.is_empty()).then_some(rule)

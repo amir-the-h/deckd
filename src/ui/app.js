@@ -262,6 +262,7 @@ function renderPageSettings() {
   const cls = el("input", { value: rule.class || "", placeholder: "e.g. obs or chrome-app\\.zoom\\.us" });
   const title = el("input", { value: rule.title || "", placeholder: "optional, e.g. Zoom Meeting" });
   const back = el("input", { type: "checkbox", checked: rule.stay ? undefined : true });
+  const steam = el("input", { type: "checkbox", checked: rule.steam_game ? true : undefined });
   const fields = el("div", { class: "stack" + (enabled ? "" : " hidden") });
 
   toggle.addEventListener("change", () => {
@@ -272,6 +273,7 @@ function renderPageSettings() {
   cls.addEventListener("input", () => setRule({ class: cls.value.trim() }));
   title.addEventListener("input", () => setRule({ title: title.value.trim() }));
   back.addEventListener("change", () => setRule({ stay: !back.checked }));
+  steam.addEventListener("change", () => setRule({ steam_game: steam.checked }));
 
   const list = el("div", { class: "window-list hidden" });
   const pick = el("button", { class: "btn small", style: "flex:none" }, "Pick from open windows…");
@@ -292,6 +294,7 @@ function renderPageSettings() {
     el("div", { class: "row" }, field("Window class", cls), pick),
     list,
     field("Window title", title),
+    el("label", { class: "row", style: "justify-content:flex-start;gap:8px" }, steam, el("span", { style: "flex:none" }, "Only games launched by Steam (any window class; leave the patterns empty to match every game)")),
     el("label", { class: "row", style: "justify-content:flex-start;gap:8px" }, back, el("span", { style: "flex:none" }, "Go back to the previous page when the app loses focus")),
     el("p", { class: "muted" }, "Patterns are case-insensitive regular expressions; a plain word matches anywhere in the name. Changing pages by hand while on an auto page cancels the automatic return."));
   box.append(

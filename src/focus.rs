@@ -11,6 +11,8 @@ use tokio::sync::watch;
 pub struct Focus {
     pub class: String,
     pub title: String,
+    /// Steam app id when the window belongs to a game Steam launched.
+    pub steam_app: Option<u32>,
 }
 
 pub type FocusWatch = watch::Receiver<Focus>;
@@ -60,7 +62,11 @@ async fn follow(tx: &watch::Sender<Focus>) -> anyhow::Result<()> {
         // activewindow>>CLASS,TITLE — the title may itself contain commas.
         if let Some(rest) = line.strip_prefix("activewindow>>") {
             let (class, title) = rest.split_once(',').unwrap_or((rest, ""));
-            let f = Focus { class: class.to_string(), title: title.to_string() };
+            let mut f = Focus { class: class.to_string(), title: title.to_string(), steam_app: None };
+            // The event has no pid; ask for it, and trust the answer only if it's still the same window.
+            if let Some(now) = query().await.filter(|q| q.class == f.class) {
+                f.steam_app = now.steam_app;
+            }
             tx.send_if_modified(|cur| replace(cur, f));
         }
     }
@@ -74,6 +80,17 @@ async fn query() -> Option<Focus> {
     Some(Focus {
         class: v.get("class").and_then(Value::as_str).unwrap_or_default().to_string(),
         title: v.get("title").and_then(Value::as_str).unwrap_or_default().to_string(),
+        steam_app: v.get("pid").and_then(Value::as_i64).and_then(steam_app_of),
+    })
+}
+
+/// Steam passes `SteamAppId` to every game it starts, and Proton keeps it, so the game's
+/// own process carries it even when the window class is just the executable's name.
+fn steam_app_of(pid: i64) -> Option<u32> {
+    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    env.split(|&b| b == 0).find_map(|kv| {
+        let id = kv.strip_prefix(b"SteamAppId=").or_else(|| kv.strip_prefix(b"SteamGameId="))?;
+        std::str::from_utf8(id).ok()?.parse().ok().filter(|&n| n != 0)
     })
 }
 
