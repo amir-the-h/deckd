@@ -131,6 +131,14 @@ pub fn toggle_mute(device: &str, kind: &str) {
     run(&["pactl", &format!("set-{}-mute", pactl_target(kind)), &dev, "toggle"]);
 }
 
+/// Makes `device` the default output/input. A blank device is already the default.
+pub fn set_default(device: &str, kind: &str) {
+    if device.is_empty() {
+        return;
+    }
+    run(&["pactl", &format!("set-default-{}", pactl_target(kind)), device]);
+}
+
 fn run(args: &[&str]) {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     tokio::spawn(async move {

@@ -138,8 +138,8 @@ fn convert_slot(sc: &Value, ctx: &mut Ctx) -> Option<Slot> {
         .enumerate()
         .filter_map(|(i, a)| Some((i, convert_action(a, ctx)?)))
         .collect();
-    // The native volume dial already mutes on push/touch; StreamController needed
-    // separate mute and set-default actions for that, which would now double-fire.
+    // The native volume dial already sets the default on push and mutes on touch;
+    // StreamController needed separate actions for that, which would now double-fire.
     let has_volume_dial = converted.iter().any(|(_, a)| a.uuid == actions::VOLUME);
     let converted: Vec<(usize, ActionInstance)> = converted
         .into_iter()

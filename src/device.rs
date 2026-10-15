@@ -1290,7 +1290,15 @@ impl DeckActor {
                 let current = self.audio.borrow().get(&device).map(|v| v.percent).unwrap_or(0);
                 audio::adjust(&device, &kind, current, t as i32 * step);
             }
-            Fire::Press | Fire::Touch | Fire::LongTouch => audio::toggle_mute(&device, &kind),
+            Fire::Press | Fire::Touch | Fire::LongTouch => {
+                let key = if matches!(fire, Fire::Press) { "press" } else { "touch" };
+                let fallback = if key == "press" && !device.is_empty() { "default" } else { "mute" };
+                match a.settings.get(key).and_then(Value::as_str).unwrap_or(fallback) {
+                    "mute" => audio::toggle_mute(&device, &kind),
+                    "default" => audio::set_default(&device, &kind),
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -1309,7 +1317,7 @@ impl DeckActor {
     }
 
     /// Picture for the native volume action: (icon, name, percent, muted).
-    fn volume_view(&self, a: &ActionInstance) -> (String, String, Option<u32>, bool) {
+    fn volume_view(&self, a: &ActionInstance) -> (String, String, Option<u32>, bool, bool) {
         let (device, kind, _) = volume_settings(a);
         let audio = self.audio.borrow();
         let vol = audio.get(&device);
@@ -1323,7 +1331,10 @@ impl DeckActor {
             None => icons::SPEAKER.to_string(),
         };
         let name = s("name").map(String::from).or_else(|| vol.map(|v| v.description.clone())).unwrap_or_else(|| "Volume".into());
-        (icon, name, vol.map(|v| v.percent), vol.is_some_and(|v| v.muted))
+        // A dial following "Default output" is always the default, so marking it says nothing.
+        let default = if kind == "source" { &audio.default_source } else { &audio.default_sink };
+        let is_default = !device.is_empty() && device == *default;
+        (icon, name, vol.map(|v| v.percent), vol.is_some_and(|v| v.muted), is_default)
     }
 
     async fn draw(&self, input: InputId) {
@@ -1371,7 +1382,7 @@ impl DeckActor {
             };
         }
         if let Some(a) = action.filter(|a| a.uuid == actions::VOLUME) {
-            let (icon, name, percent, muted) = self.volume_view(a);
+            let (icon, name, percent, muted, is_default) = self.volume_view(a);
             let flash = self.live.get(&a.context).and_then(|l| l.flash.map(|(f, _)| f));
             return match input {
                 InputId::Key(_) => {
@@ -1388,7 +1399,7 @@ impl DeckActor {
                 InputId::Dial(_) => {
                     let (w, h) = self.kind.lcd_strip_size()?;
                     let seg = (w / self.kind.encoder_count() as usize) as u32;
-                    Some(self.renderer.render_volume(seg, h as u32, &icon, &name, percent, muted, flash))
+                    Some(self.renderer.render_volume(seg, h as u32, &icon, &name, percent, muted, is_default, flash))
                 }
             };
         }

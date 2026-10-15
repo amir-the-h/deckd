@@ -819,6 +819,14 @@ async function renderVolumeSettings(box, a) {
     field("Name", settingInput(a, "name", { placeholder: "e.g. Speakers" })),
     field("Step (%)", settingInput(a, "step", { type: "number", placeholder: "2", min: 1, max: 25 }))));
   box.append(field("Icon", settingSelect(a, "icon", [["", "Automatic"], ["speaker", "Speaker"], ["headset", "Headset"], ["mic", "Microphone"]])));
+  const mute = ["mute", "Toggle mute"], none = ["none", "Nothing"];
+  // Blank means the daemon's default: push sets a chosen device as default, otherwise mutes.
+  const pushOpts = a.settings?.device
+    ? [["", "Set as default device"], mute, none]
+    : [["", "Toggle mute"], none];
+  box.append(el("div", { class: "row" },
+    field("Push dial", settingSelect(a, "press", pushOpts)),
+    field("Tap screen", settingSelect(a, "touch", [["", "Toggle mute"], ["default", "Set as default device"], none]))));
 }
 
 // ------------------------------------------------------------------ property inspectors

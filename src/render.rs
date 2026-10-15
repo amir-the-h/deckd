@@ -188,7 +188,7 @@ impl Renderer {
     }
 
     /// Native volume dial: icon left, name over percentage right, bar along the bottom.
-    pub fn render_volume(&self, w: u32, h: u32, icon: &str, name: &str, percent: Option<u32>, muted: bool, flash: Option<Flash>) -> DynamicImage {
+    pub fn render_volume(&self, w: u32, h: u32, icon: &str, name: &str, percent: Option<u32>, muted: bool, is_default: bool, flash: Option<Flash>) -> DynamicImage {
         use imageproc::drawing::{draw_filled_rect_mut, draw_line_segment_mut};
         use imageproc::rect::Rect;
         let mut canvas = RgbaImage::from_pixel(w, h, Rgba([0, 0, 0, 255]));
@@ -215,6 +215,13 @@ impl Renderer {
                     draw_line_segment_mut(&mut canvas, (x0 + o as f32, y0), (x1 + o as f32, y1), red);
                 }
             }
+        }
+
+        // Underline the icon of the current default device.
+        if is_default {
+            let (ux, uy) = (ix as i32 + (6.0 * sx) as i32, iy as i32 + icon_box as i32 + (5.0 * sy) as i32);
+            let uw = icon_box.saturating_sub((12.0 * sx) as u32).max(1);
+            draw_filled_rect_mut(&mut canvas, Rect::at(ux, uy).of_size(uw, (4.0 * sy).max(2.0) as u32), Rgba([247, 130, 27, 255]));
         }
 
         // Text column to the right of the icon
@@ -608,9 +615,9 @@ mod volume_tests {
         let Ok(out) = std::env::var("DECKD_TEST_OUT") else { return };
         let r = Renderer::new().unwrap();
         let mut canvas = RgbaImage::from_pixel(620, 100, Rgba([60, 60, 60, 255]));
-        let a = r.render_volume(200, 100, icons::SPEAKER, "Speakers", Some(60), false, None);
-        let b = r.render_volume(200, 100, icons::HEADSET, "Headset", Some(100), false, None);
-        let c = r.render_volume(200, 100, icons::SPEAKER, "Speakers", Some(35), true, None);
+        let a = r.render_volume(200, 100, icons::SPEAKER, "Speakers", Some(60), false, true, None);
+        let b = r.render_volume(200, 100, icons::HEADSET, "Headset", Some(100), false, false, None);
+        let c = r.render_volume(200, 100, icons::SPEAKER, "Speakers", Some(35), true, true, None);
         imageops::overlay(&mut canvas, &a, 0, 0);
         imageops::overlay(&mut canvas, &b, 210, 0);
         imageops::overlay(&mut canvas, &c, 420, 0);
