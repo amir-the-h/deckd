@@ -244,3 +244,20 @@ details.raw summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .window-list button:hover { border-color: var(--accent); }
 .window-list .cls { font-family: ui-monospace, monospace; font-size: 12px; }
 .window-list .ttl { color: var(--muted); font-size: 12px; margin-left: 8px; }
+
+/* colour popover */
+.cpop { position: fixed; z-index: 30; width: 232px; padding: 10px; display: flex; flex-direction: column; gap: 10px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 30px #000a; }
+.cp-sv { position: relative; height: 140px; border-radius: 6px; cursor: crosshair; touch-action: none;
+  background-image: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent); }
+.cp-hue { position: relative; height: 12px; border-radius: 6px; cursor: pointer; touch-action: none;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+.cp-knob { position: absolute; width: 14px; height: 14px; border: 2px solid #fff; border-radius: 50%;
+  box-shadow: 0 0 0 1px #0008; transform: translate(-50%, -50%); pointer-events: none; }
+.cp-hue .cp-knob { top: 50%; background: transparent; }
+.cp-row { display: flex; gap: 8px; align-items: center; }
+.cp-swatch { width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--line); flex: none; }
+.cp-hex { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-family: ui-monospace, monospace; }
+.cp-presets { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.cp-presets button { aspect-ratio: 1; border: 1px solid #fff3; border-radius: 5px; padding: 0; cursor: pointer; }
+.cp-presets button:hover { outline: 2px solid var(--accent); }

@@ -699,7 +699,7 @@ function settingInput(a, key, attrs = {}) {
 }
 
 function settingCheckbox(a, key, label, def) {
-  const box = el("input", { type: "checkbox", checked: (a.settings?.[key] ?? def) ? true : undefined });
+  const box = el("input", { type: "checkbox", checked: (a.settings?.[key] ?? def) ? true : undefined, style: "flex:none" });
   box.addEventListener("change", () => {
     const act = curAction();
     act.settings ||= {};
@@ -892,6 +892,7 @@ async function mountPI(holder, context, keep) {
     } catch (e) {
       console.error("property inspector:", e);
     }
+    try { hookColorInputs(frame.contentDocument, frame); } catch {}
   });
   // Grow the frame with its content.
   const timer = setInterval(() => {
@@ -993,6 +994,132 @@ function renderAppearance(slot) {
   box.append(field("Labels", grid2));
   box.append(el("p", { class: "muted" }, "Leave the text empty to only change the size or colour of the action's own title. Plugins may replace the icon or title while running (e.g. to show a live state)."));
   return box;
+}
+
+// ------------------------------------------------------------------ colour popover
+
+// The browser places <input type=color>'s own picker where it likes, so near the window's
+// edge it gets cut off. Every colour input, including those inside plugin settings panels,
+// opens this in-page picker instead, which always fits inside the window.
+
+const CP = { input: null, el: null, h: 0, s: 0, v: 1 };
+const CP_PRESETS = ["#ffffff", "#c0c0c0", "#808080", "#404040", "#000000", "#f7821b", "#e5484d", "#ffc83d",
+  "#3fb950", "#00bcd4", "#2196f3", "#7c4dff", "#e040fb", "#ff4081"];
+
+function hexToHsv(hex) {
+  let m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  let h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b), d = max - Math.min(r, g, b);
+  let hue = 0;
+  if (d) hue = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: ((hue * 60) + 360) % 360, s: max ? d / max : 0, v: max };
+}
+
+function hsvToHex(h, s, v) {
+  const f = (n) => {
+    const k = (n + h / 60) % 6;
+    return Math.round((v - v * s * Math.max(0, Math.min(k, 4 - k, 1))) * 255).toString(16).padStart(2, "0");
+  };
+  return `#${f(5)}${f(3)}${f(1)}`;
+}
+
+function buildColorPopover() {
+  const sv = el("div", { class: "cp-sv" }, el("div", { class: "cp-knob" }));
+  const hue = el("div", { class: "cp-hue" }, el("div", { class: "cp-knob" }));
+  const hex = el("input", { class: "cp-hex", spellcheck: "false", maxlength: 7 });
+  const swatch = el("span", { class: "cp-swatch" });
+  const presets = el("div", { class: "cp-presets" }, CP_PRESETS.map((c) =>
+    el("button", { type: "button", style: `background:${c}`, title: c, onclick: () => setPopoverColor(c, true) })));
+  const pop = el("div", { class: "cpop hidden" }, sv, hue, el("div", { class: "cp-row" }, swatch, hex), presets);
+  const drag = (area, onMove) => area.addEventListener("pointerdown", (e) => {
+    area.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const r = area.getBoundingClientRect();
+      onMove(Math.min(Math.max((ev.clientX - r.left) / r.width, 0), 1), Math.min(Math.max((ev.clientY - r.top) / r.height, 0), 1));
+      emitColor();
+    };
+    move(e);
+    area.onpointermove = move;
+    area.onpointerup = () => { area.onpointermove = area.onpointerup = null; };
+  });
+  drag(sv, (x, y) => { CP.s = x; CP.v = 1 - y; });
+  drag(hue, (x) => { CP.h = x * 359.9; });
+  hex.addEventListener("input", () => { if (hexToHsv(hex.value)) setPopoverColor(hex.value, true, false); });
+  document.body.append(pop);
+  return pop;
+}
+
+function paintPopover(updateHex = true) {
+  const pop = CP.el, hex = hsvToHex(CP.h, CP.s, CP.v);
+  pop.querySelector(".cp-sv").style.backgroundColor = hsvToHex(CP.h, 1, 1);
+  const [svKnob, hueKnob] = pop.querySelectorAll(".cp-knob");
+  Object.assign(svKnob.style, { left: `${CP.s * 100}%`, top: `${(1 - CP.v) * 100}%`, background: hex });
+  hueKnob.style.left = `${CP.h / 3.6}%`;
+  pop.querySelector(".cp-swatch").style.background = hex;
+  if (updateHex) pop.querySelector(".cp-hex").value = hex;
+}
+
+function setPopoverColor(color, emit, updateHex = true) {
+  const hsv = hexToHsv(color);
+  if (!hsv) return;
+  // Keep the hue when the colour is grey, so the hue slider doesn't jump to red.
+  Object.assign(CP, hsv.s === 0 || hsv.v === 0 ? { s: hsv.s, v: hsv.v } : hsv);
+  paintPopover(updateHex);
+  if (emit) emitColor(updateHex);
+}
+
+function emitColor(updateHex = true) {
+  paintPopover(updateHex);
+  const input = CP.input;
+  if (!input?.isConnected) return;
+  input.value = hsvToHex(CP.h, CP.s, CP.v);
+  // Events from the input's own window, so listeners inside iframes see them.
+  input.dispatchEvent(new (input.ownerDocument.defaultView.Event)("input", { bubbles: true }));
+}
+
+/** Opens the picker for `input`; `rect` is its box in this window's coordinates. */
+function openColorPopover(input, rect) {
+  if (CP.input === input) return closeColorPopover();
+  closeColorPopover();
+  CP.el ||= buildColorPopover();
+  CP.input = input;
+  setPopoverColor(input.value || "#ffffff", false);
+  const pop = CP.el;
+  pop.classList.remove("hidden");
+  const { width: w, height: h } = pop.getBoundingClientRect();
+  const gap = 6, edge = 8;
+  let top = rect.bottom + gap;
+  if (top + h > innerHeight - edge) top = rect.top - gap - h >= edge ? rect.top - gap - h : innerHeight - edge - h;
+  const left = Math.min(Math.max(rect.left, edge), innerWidth - edge - w);
+  Object.assign(pop.style, { top: `${Math.max(top, edge)}px`, left: `${left}px` });
+}
+
+function closeColorPopover() {
+  const input = CP.input;
+  if (!input) return;
+  CP.input = null;
+  CP.el?.classList.add("hidden");
+  if (input.isConnected) input.dispatchEvent(new (input.ownerDocument.defaultView.Event)("change", { bubbles: true }));
+}
+
+/** Routes colour inputs in `doc` (this page, or a settings-panel iframe) to the popover. */
+function hookColorInputs(doc, frame) {
+  doc.addEventListener("click", (e) => {
+    const t = e.target;
+    if (t?.tagName !== "INPUT" || t.type !== "color") return;
+    e.preventDefault();
+    const r = t.getBoundingClientRect();
+    const o = frame ? frame.getBoundingClientRect() : { left: 0, top: 0 };
+    openColorPopover(t, { left: r.left + o.left, right: r.right + o.left, top: r.top + o.top, bottom: r.bottom + o.top });
+  }, true);
+  doc.addEventListener("pointerdown", (e) => {
+    if (CP.input && e.target !== CP.input && !CP.el?.contains(e.target)) closeColorPopover();
+  }, true);
+  doc.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && CP.input) { e.stopImmediatePropagation(); closeColorPopover(); }
+  }, true);
 }
 
 // ------------------------------------------------------------------ icon picker
@@ -1257,6 +1384,10 @@ function init() {
     if ((e.key === "Delete" || e.key === "Backspace") && S.sel && !typing && !modalOpen) clearSlot();
   });
   window.addEventListener("resize", debounce(renderDeck, 150));
+  hookColorInputs(document);
+  // The popover is placed once; close it rather than leave it behind when things move.
+  window.addEventListener("resize", closeColorPopover);
+  document.addEventListener("scroll", (e) => { if (!CP.el?.contains(e.target)) closeColorPopover(); }, true);
   connectEvents();
   loadCatalog().catch((e) => toast(e.message, true));
   loadDevices().catch((e) => toast(e.message, true));
