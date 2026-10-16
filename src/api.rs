@@ -269,7 +269,7 @@ async fn install_plugin(State(s): State<AppState>, Query(q): Query<InstallQuery>
     let result = tokio::task::spawn_blocking(move || host.install(&t)).await.map_err(bad)?;
     let _ = std::fs::remove_file(&tmp);
     let p = result.map_err(|e| bad(format!("{e:#}")))?;
-    s.hub.emit(json!({ "type": "plugins" }));
+    s.hub.plugins_loaded(vec![p.uuid.clone()]);
     Ok(Json(json!({ "uuid": p.uuid, "name": p.name, "version": p.version, "runtime": plugins::runtime_name(&p.runtime) })))
 }
 

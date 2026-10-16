@@ -52,6 +52,23 @@ async fn main() -> Result<()> {
             let audio = audio::start();
             widgets::ensure_mango_log_dir();
             let app = server::router(api::AppState { host: host.clone(), hub: hub.clone(), audio: audio.clone() });
+            if host.has_pending() {
+                let (host, hub) = (host.clone(), hub.clone());
+                tokio::spawn(async move {
+                    while host.has_pending() {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let added = tokio::task::spawn_blocking({
+                            let host = host.clone();
+                            move || host.load_pending()
+                        })
+                        .await
+                        .unwrap_or_default();
+                        if !added.is_empty() {
+                            hub.plugins_loaded(added);
+                        }
+                    }
+                });
+            }
             tokio::select! {
                 r = device::run_manager(renderer, host, hub, audio, focus::start()) => r?,
                 r = async { axum::serve(listener, app).await } => r?,

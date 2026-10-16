@@ -84,6 +84,9 @@ impl Catalog {
 
 pub struct Host {
     catalog: std::sync::RwLock<Catalog>,
+    /// Plugin links whose target was missing at startup (e.g. a network share
+    /// not mounted yet); [`Host::load_pending`] retries them.
+    pending: Mutex<Vec<PathBuf>>,
     port: u16,
     node: Option<PathBuf>,
     inner: Mutex<Inner>,
@@ -93,6 +96,19 @@ pub fn plugins_dir() -> PathBuf {
     config::config_dir().join("plugins")
 }
 
+fn load_plugin(dir: &Path) -> Option<PluginInfo> {
+    match manifest::load(dir) {
+        Ok(p) => {
+            tracing::info!("plugin {} {} ({} actions, {})", p.uuid, p.version, p.actions.len(), runtime_name(&p.runtime));
+            Some(p)
+        }
+        Err(e) => {
+            tracing::warn!("skipping {}: {e:#}", dir.display());
+            None
+        }
+    }
+}
+
 fn data_dir() -> PathBuf {
     config::config_dir().join("plugin-data")
 }
@@ -100,23 +116,54 @@ fn data_dir() -> PathBuf {
 impl Host {
     pub fn load(port: u16) -> Arc<Host> {
         let mut catalog = Catalog::default();
+        let mut pending = Vec::new();
         if let Ok(entries) = std::fs::read_dir(plugins_dir()) {
             for entry in entries.flatten() {
                 let dir = entry.path();
                 // Dot-folders are installs in progress.
-                if !dir.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+                if entry.file_name().to_string_lossy().starts_with('.') {
                     continue;
                 }
-                match manifest::load(&dir) {
-                    Ok(p) => {
-                        tracing::info!("plugin {} {} ({} actions, {})", p.uuid, p.version, p.actions.len(), runtime_name(&p.runtime));
-                        catalog.insert(p);
+                if !dir.is_dir() {
+                    if dir.is_symlink() {
+                        let target = std::fs::read_link(&dir).unwrap_or_default();
+                        tracing::warn!("plugin link {} points to missing {}; will load it when it appears", dir.display(), target.display());
+                        pending.push(dir);
                     }
-                    Err(e) => tracing::warn!("skipping {}: {e:#}", dir.display()),
+                    continue;
+                }
+                if let Some(p) = load_plugin(&dir) {
+                    catalog.insert(p);
                 }
             }
         }
-        Arc::new(Host { catalog: std::sync::RwLock::new(catalog), port, node: find_node(), inner: Mutex::new(Inner::default()) })
+        Arc::new(Host { catalog: std::sync::RwLock::new(catalog), pending: Mutex::new(pending), port, node: find_node(), inner: Mutex::new(Inner::default()) })
+    }
+
+    /// Whether some plugin links were missing at startup and are still being retried.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.lock().unwrap().is_empty()
+    }
+
+    /// Loads the pending plugin links whose targets have appeared. Returns the
+    /// UUIDs of the plugins that were added.
+    pub fn load_pending(&self) -> Vec<String> {
+        let ready: Vec<PathBuf> = {
+            let mut pending = self.pending.lock().unwrap();
+            let (ready, still): (Vec<_>, Vec<_>) = pending.drain(..).partition(|d| d.is_dir() || !d.is_symlink());
+            *pending = still;
+            ready
+        };
+        let mut added = Vec::new();
+        for dir in ready.iter().filter(|d| d.is_dir()) {
+            if let Some(p) = load_plugin(dir) {
+                if self.plugin(&p.uuid).is_none() {
+                    added.push(p.uuid.clone());
+                    self.catalog.write().unwrap().insert(p);
+                }
+            }
+        }
+        added
     }
 
     pub fn action(&self, uuid: &str) -> Option<Arc<ActionInfo>> {

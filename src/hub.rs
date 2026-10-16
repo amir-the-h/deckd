@@ -23,6 +23,9 @@ pub enum UiCmd {
     Render { page: String, input: InputId, reply: oneshot::Sender<Option<Vec<u8>>> },
     /// Opens (or closes) a property inspector; returns Elgato's `inActionInfo`.
     Inspector { context: String, open: bool, reply: Reply<Value> },
+    /// These plugins were just installed or loaded; actions of theirs already on
+    /// screen need `willAppear` and a redraw.
+    PluginsLoaded(Vec<String>),
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -66,6 +69,14 @@ impl Hub {
         let mut v: Vec<_> = self.decks.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
+    }
+
+    /// Tells the UI and every deck that plugins were added at runtime.
+    pub fn plugins_loaded(&self, uuids: Vec<String>) {
+        self.emit(serde_json::json!({ "type": "plugins" }));
+        for (_, deck) in self.decks() {
+            let _ = deck.tx.send(UiCmd::PluginsLoaded(uuids.clone()));
+        }
     }
 
     /// Broadcasts an event to connected UI clients. Free when nobody listens.

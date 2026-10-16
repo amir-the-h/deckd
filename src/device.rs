@@ -915,6 +915,19 @@ impl DeckActor {
                 let _ = reply.send(r);
             }
             UiCmd::Switch { page } => self.apply(Effect::SwitchPage(page)).await,
+            UiCmd::PluginsLoaded(uuids) => {
+                let page = self.current.clone();
+                for uuid in &uuids {
+                    self.appear(&page, "willAppear", Some(uuid));
+                }
+                for k in 0..self.kind.key_count() {
+                    self.dirty.insert(InputId::Key(k));
+                }
+                for d in 0..self.kind.encoder_count() {
+                    self.dirty.insert(InputId::Dial(d));
+                }
+                self.redraw_dirty().await;
+            }
             UiCmd::Render { page, input, reply } => {
                 let png = self.render(&page, input).and_then(|img| {
                     let mut buf = std::io::Cursor::new(Vec::new());
