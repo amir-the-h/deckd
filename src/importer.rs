@@ -243,17 +243,12 @@ fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {
             json!({ "command": format!("steam steam://friends/status/{}", s("committed_status")) }),
             vec![],
         ),
-        "com_core447_DeckPlugin::ChangeState" | "me_amankhanna_opendeck::OpenDeckButton" => return None,
+        "com_core447_DeckPlugin::ChangeState" => return None,
 
-        // Elgato-format plugins that cover StreamController ones.
-        "com_core447_MediaPlugin::PlayPause" | "dev_ReneLu_SpotifyControl::ElementPlayAction" => ("me.amankhanna.oampris.playpause", json!({}), vec![]),
-        "com_core447_MediaPlugin::Next" => ("me.amankhanna.oampris.next", json!({}), vec![]),
-        "com_core447_MediaPlugin::Previous" => ("me.amankhanna.oampris.previous", json!({}), vec![]),
-        "com_imdevinc_StreamControllerDiscordPlugin::Mute" => ("me.amankhanna.oadiscord.togglemute", json!({}), vec![]),
-        "com_imdevinc_StreamControllerDiscordPlugin::Deafen" => ("me.amankhanna.oadiscord.toggledeafen", json!({}), vec![]),
-        "com_imdevinc_StreamControllerDiscordPlugin::Push_To_Talk" => ("me.amankhanna.oadiscord.pushtotalk", json!({}), vec![]),
-        "com_imdevinc_StreamControllerDiscordPlugin::UserVolume" => ("me.amankhanna.oadiscord.volumecontrol", json!({}), vec![]),
-        // Clocks, MangoHud and now-playing are built-ins.
+        // Media keys, clocks, MangoHud and now-playing are built-ins.
+        "com_core447_MediaPlugin::PlayPause" | "dev_ReneLu_SpotifyControl::ElementPlayAction" => (actions::MEDIA_KEY, json!({ "key": "playpause" }), vec![]),
+        "com_core447_MediaPlugin::Next" => (actions::MEDIA_KEY, json!({ "key": "next" }), vec![]),
+        "com_core447_MediaPlugin::Previous" => (actions::MEDIA_KEY, json!({ "key": "previous" }), vec![]),
         "com_core447_Clocks::Date" => (actions::CLOCK, json!({ "style": "digital", "format": s("key") }), vec![]),
         "com_core447_Clocks::DigitalClock" => (actions::CLOCK, json!({ "style": "digital" }), vec![]),
         "com_core447_Clocks::AnalogClock" => (actions::CLOCK, json!({ "style": "analog" }), vec![]),
@@ -279,15 +274,6 @@ fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {
             let flag = |k: &str| settings.get(k).and_then(Value::as_bool).unwrap_or(true);
             (actions::MEDIA, json!({ "player": player, "art": flag("show_thumbnail"), "title": flag("show_label") }), vec![])
         }
-        // OBS via Multi OBS Controller, which talks to OBS's built-in obs-websocket.
-        "com_oparada1988_OBS_Plus::SwitchScene" => ("dev.theca11.multiobs.setscene", json!({ "params1": { "sceneName": s("scene") } }), vec![]),
-        "com_oparada1988_OBS_Plus::ToggleRecord" => ("dev.theca11.multiobs.togglerecord", json!({}), vec![]),
-        "com_oparada1988_OBS_Plus::ToggleStream" => ("dev.theca11.multiobs.togglestream", json!({}), vec![]),
-        "com_oparada1988_OBS_Plus::ToggleReplayBuffer" => ("dev.theca11.multiobs.togglereplaybuffer", json!({}), vec![]),
-        "com_oparada1988_OBS_Plus::SaveReplayBuffer" => ("dev.theca11.multiobs.savereplaybuffer", json!({}), vec![]),
-        "com_oparada1988_OBS_Plus::OBSStats" => ("dev.theca11.multiobs.stats", json!({}), vec![]),
-        // Multi OBS can mute an input but not change its volume, so the dial mutes on push.
-        "com_oparada1988_OBS_Plus::InputDial" => ("dev.theca11.multiobs.toggleinputmute", json!({ "params1": { "inputName": s("input") } }), vec![]),
         "com_gapls_AudioControl::AdjustVolume" => {
             let source = s("device-filter") == "source";
             let kind = if source { "source" } else { "sink" };
@@ -301,11 +287,6 @@ fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {
             return Some(ActionInstance { uuid: format!("sc:{other}"), settings, trigger, ..Default::default() });
         }
     };
-    let mut new_settings = new_settings;
-    if uuid.starts_with("dev.theca11.multiobs.") {
-        // Multi OBS picks its target before global settings arrive; pin it to the first OBS.
-        new_settings["common"] = json!({ "target": "1" });
-    }
     Some(ActionInstance { uuid: uuid.into(), settings: new_settings, trigger, states, ..Default::default() })
 }
 

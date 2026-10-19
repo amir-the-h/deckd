@@ -177,6 +177,8 @@ fn builtins() -> Vec<Value> {
                 "icon": icon("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7z") }),
         json!({ "uuid": "deckd.media", "name": "Now Playing", "tooltip": "Track, artist and cover art; press to play/pause, turn to skip", "keypad": true, "encoder": true,
                 "icon": icon("M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z") }),
+        json!({ "uuid": "deckd.mediakey", "name": "Media Key", "tooltip": "Play/pause, skip, stop or seek the current media player", "keypad": true, "encoder": true,
+                "icon": icon("M3 5v14l8-7zm10 0h3v14h-3zm5 0h3v14h-3z") }),
         json!({ "uuid": "deckd.mangohud", "name": "MangoHud", "tooltip": "Toggle the HUD or show a live game stat", "keypad": true, "encoder": true,
                 "fields": crate::widgets::MANGO_FIELDS,
                 "icon": icon("M21 6H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h18a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1zM10 13H8v2H6v-2H4v-2h2V9h2v2h2v2zm4.5 2a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-3a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z") }),

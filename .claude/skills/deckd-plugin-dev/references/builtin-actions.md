@@ -7,6 +7,7 @@ Built-ins run inside the daemon: no process, no WebSocket, direct access to devi
 | `deckd.command`, `deckd.page`, `deckd.dial` | stateless: input → run something / navigate | `actions::run` in `src/actions.rs` |
 | `deckd.volume` | live external state pushed by a watcher, custom drawing | `src/audio.rs`, `volume_fire`/`volume_view` in `src/device.rs` |
 | `deckd.clock`, `deckd.media`, `deckd.mangohud` | redrawn on a 1 s tick while visible | `src/widgets.rs`, `tick_live`/`render_widget` |
+| `deckd.mediakey` | input → async call, default icon from settings | `media_key_fire` in `src/device.rs`, `widgets::media_key` |
 
 ## Steps
 

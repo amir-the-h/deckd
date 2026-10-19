@@ -351,6 +351,28 @@ impl DeckActor {
         }
     }
 
+    /// Media keys: press for the key's command; on a dial, turning skips tracks (or seeks, for seek keys).
+    fn media_key_fire(&self, a: &ActionInstance, fire: Fire) {
+        let s = |k: &str| a.settings.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        let key = s("key");
+        let seconds = a.settings.get("seconds").and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok())).unwrap_or(10);
+        let seeking = key.starts_with("seek_");
+        let (method, seek) = match fire {
+            Fire::Rotate(t) if seeking => ("Seek", seconds * t as i64),
+            Fire::Rotate(t) => (if t > 0 { "Next" } else { "Previous" }, 0),
+            _ => (crate::widgets::media_key_info(&key).0, if key == "seek_back" { -seconds } else { seconds }),
+        };
+        let filter = s("player");
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            crate::widgets::media_key(&filter, method, seek).await;
+            // Now-playing buttons for the same player pick up the change straight away.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let info = crate::widgets::media(&filter).await;
+            let _ = tx.send(Event::Media(filter, info));
+        });
+    }
+
     /// The picture for a live built-in.
     fn render_widget(&self, a: &ActionInstance, input: InputId) -> Option<DynamicImage> {
         let s = |k: &str| a.settings.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
@@ -591,6 +613,8 @@ impl DeckActor {
                 self.volume_fire(action, fire);
             } else if matches!(action.uuid.as_str(), actions::MANGOHUD | actions::MEDIA | actions::CLOCK) {
                 self.widget_fire(action, fire);
+            } else if action.uuid == actions::MEDIA_KEY {
+                self.media_key_fire(action, fire);
             } else if actions::is_builtin(&action.uuid) {
                 if let Some(e) = actions::run(&action.uuid, &action.settings, fire) {
                     effects.push(e);
@@ -1199,6 +1223,9 @@ impl DeckActor {
         let info_arc = self.host.action(&a.uuid);
         let info = info_arc.as_deref();
         let mut st = info.and_then(|i| i.states.get(a.state).or(i.states.first())).cloned().unwrap_or_default();
+        if a.uuid == actions::MEDIA_KEY {
+            st.image = Some(crate::widgets::media_key_icon(a.settings.get("key").and_then(Value::as_str).unwrap_or_default()));
+        }
         if let Some(user) = a.current_state() {
             if user.image.is_some() {
                 st.image = user.image.clone();

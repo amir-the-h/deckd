@@ -790,6 +790,12 @@ function renderSettings(box, keepPI) {
     box.append(settingCheckbox(a, "title", "Show the track title", true));
     box.append(colorRow(a, [["title_color", "Title", "#ffffff"], ["artist_color", "Artist", "#b0b0b0"], ["paused_color", "“Paused”", "#f7821b"]]));
     box.append(el("p", { class: "muted" }, "Press or tap to play/pause. On a dial, turn to skip tracks."));
+  } else if (a.uuid === "deckd.mediakey") {
+    const keys = [["playpause", "Play / pause"], ["play", "Play"], ["pause", "Pause"], ["next", "Next track"], ["previous", "Previous track"], ["stop", "Stop"], ["seek_forward", "Seek forward"], ["seek_back", "Seek back"]];
+    box.append(field("Key", settingSelect(a, "key", keys, () => { renderInspector(); refreshSlot(S.sel); })));
+    if (String(a.settings?.key || "").startsWith("seek_")) box.append(field("Seconds", settingInput(a, "seconds", { type: "number", placeholder: "10" })));
+    box.append(field("Player", settingInput(a, "player", { placeholder: "Any player (or e.g. spotify, chromium, firefox)" })));
+    box.append(el("p", { class: "muted" }, "Goes to the playing player, or the first one found. On a dial, turning skips tracks (or seeks, for seek keys)."));
   } else if (a.uuid === "deckd.mangohud") {
     const stat = a.settings?.mode !== "toggle";
     box.append(field("Mode", settingSelect(a, "mode", [["stat", "Show a live stat"], ["toggle", "Toggle the HUD"]], () => { renderInspector(); refreshSlot(S.sel); })));

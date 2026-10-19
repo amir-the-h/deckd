@@ -217,6 +217,37 @@ async fn cache_art(url: &str) -> Option<String> {
 }
 
 /// Calls an MPRIS player method such as PlayPause, Next or Previous.
+/// What a media key does, by its `key` setting: (MPRIS method, icon path).
+pub fn media_key_info(key: &str) -> (&'static str, &'static str) {
+    match key {
+        "play" => ("Play", "M8 5v14l11-7z"),
+        "pause" => ("Pause", "M6 19h4V5H6v14zm8-14v14h4V5h-4z"),
+        "next" => ("Next", "M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"),
+        "previous" => ("Previous", "M6 6h2v12H6zm3.5 6l8.5 6V6z"),
+        "stop" => ("Stop", "M6 6h12v12H6z"),
+        "seek_forward" => ("Seek", "M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"),
+        "seek_back" => ("Seek", "M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"),
+        _ => ("PlayPause", "M3 5v14l8-7zm10 0h3v14h-3zm5 0h3v14h-3z"),
+    }
+}
+
+/// The default picture for a media key, as a data URI (state images are URIs or paths).
+pub fn media_key_icon(key: &str) -> String {
+    format!(r##"data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6 -6 36 36"><path fill="#fff" d="{}"/></svg>"##, media_key_info(key).1)
+}
+
+/// Sends a media key to the player `media` would pick. `seek` is in seconds (negative = back).
+pub async fn media_key(filter: &str, method: &str, seek: i64) {
+    let Some(m) = media(filter).await else { return };
+    let player = ["call", &m.bus, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player"];
+    if method == "Seek" {
+        let us = (seek * 1_000_000).to_string();
+        busctl(&[&player[..], &["Seek", "x", &us]].concat()).await;
+    } else {
+        busctl(&[&player[..], &[method]].concat()).await;
+    }
+}
+
 pub fn media_call(bus: &str, method: &str) {
     let (bus, method) = (bus.to_string(), method.to_string());
     tokio::spawn(async move {

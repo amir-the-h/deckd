@@ -12,6 +12,8 @@ pub const VOLUME: &str = "deckd.volume";
 pub const CLOCK: &str = "deckd.clock";
 pub const MANGOHUD: &str = "deckd.mangohud";
 pub const MEDIA: &str = "deckd.media";
+/// Play/pause, skip, stop or seek on an MPRIS player; handled by the device actor.
+pub const MEDIA_KEY: &str = "deckd.mediakey";
 
 pub fn is_builtin(uuid: &str) -> bool {
     uuid.starts_with("deckd.")

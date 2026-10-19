@@ -19,7 +19,7 @@ app.
   and `.streamDeckIconPack`s), and plugin install/removal.
 - **Built-in actions** that need no plugin process: switch page, run command,
   dial commands, brightness, audio volume (PulseAudio/PipeWire), clock,
-  now-playing (MPRIS) and MangoHud stats.
+  now-playing and media keys (MPRIS) and MangoHud stats.
 - **Several actions per key or dial**, each bound to a tap, a hold or a
   turn direction.
 - **Automatic page switching** by focused window (class, title or "any Steam
@@ -101,6 +101,13 @@ local connection as your user can run commands through it, the same as any
 other process you run. Requests a web browser makes on behalf of other websites
 are refused: the `Host` header must be a loopback name and any `Origin` must be
 deckd's own UI.
+
+## Plugins
+
+[deckd-plugins](https://github.com/amir-the-h/deckd-plugins) has plugins made
+alongside deckd: OBS Studio, Discord voice, Elgato Key Lights, Hyprland shaders,
+server monitoring (Prometheus and service health), qBittorrent and Claude Code
+usage.
 
 ## Writing plugins
 
