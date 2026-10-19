@@ -20,7 +20,8 @@ use std::sync::Arc;
 use anyhow::Result;
 
 const USAGE: &str = "\
-deckd - lightweight Stream Deck daemon
+deckd - lightweight deck daemon for Linux
+Built for Elgato Stream Deck hardware; runs Elgato-format plugins.
 
 USAGE:
     deckd                          run the daemon
@@ -50,7 +51,7 @@ async fn main() -> Result<()> {
             let hub = Arc::new(hub::Hub::new());
             let audio = audio::start();
             widgets::ensure_mango_log_dir();
-            let app = server::router(api::AppState { host: host.clone(), hub: hub.clone(), audio: audio.clone() });
+            let app = server::router(api::AppState { host: host.clone(), hub: hub.clone(), audio: audio.clone() }, port);
             if host.has_pending() {
                 let (host, hub) = (host.clone(), hub.clone());
                 tokio::spawn(async move {
