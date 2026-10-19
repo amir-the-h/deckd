@@ -12,7 +12,6 @@ mod layout;
 mod plugins;
 mod render;
 mod server;
-mod shader;
 mod usbreset;
 mod widgets;
 

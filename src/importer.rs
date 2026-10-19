@@ -253,10 +253,6 @@ fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {
         "com_imdevinc_StreamControllerDiscordPlugin::Deafen" => ("me.amankhanna.oadiscord.toggledeafen", json!({}), vec![]),
         "com_imdevinc_StreamControllerDiscordPlugin::Push_To_Talk" => ("me.amankhanna.oadiscord.pushtotalk", json!({}), vec![]),
         "com_imdevinc_StreamControllerDiscordPlugin::UserVolume" => ("me.amankhanna.oadiscord.volumecontrol", json!({}), vec![]),
-        "me_the_h_VirtualCam::ToggleCapture" => ("me.the-h.utilities.virtualcam-toggle", json!({}), vec![]),
-        "com_the_h_ElgatoKeyLight::ToggleLight" => ("me.the-h.utilities.elgato-toggle", json!({}), vec![]),
-        "com_the_h_ElgatoKeyLight::SetBrightness" => ("me.the-h.utilities.elgato-brightness", json!({}), vec![]),
-        "com_the_h_ElgatoKeyLight::SetTemperature" => ("me.the-h.utilities.elgato-temperature", json!({}), vec![]),
         // Clocks, MangoHud and now-playing are built-ins.
         "com_core447_Clocks::Date" => (actions::CLOCK, json!({ "style": "digital", "format": s("key") }), vec![]),
         "com_core447_Clocks::DigitalClock" => (actions::CLOCK, json!({ "style": "digital" }), vec![]),
@@ -283,12 +279,6 @@ fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {
             let flag = |k: &str| settings.get(k).and_then(Value::as_bool).unwrap_or(true);
             (actions::MEDIA, json!({ "player": player, "art": flag("show_thumbnail"), "title": flag("show_label") }), vec![])
         }
-        // Hyprland shaders are a built-in now.
-        "com_amir_HyprShader::ShaderDial" => (actions::SHADER, json!({ "mode": "dial", "index": settings.get("dial_index").cloned().unwrap_or(json!(0)) }), vec![]),
-        "com_amir_HyprShader::AnimatedShaderDial" => {
-            (actions::SHADER, json!({ "mode": "dial", "folder": "animated", "index": settings.get("dial_index").cloned().unwrap_or(json!(0)) }), vec![])
-        }
-        "com_amir_HyprShader::ToggleShader" => (actions::SHADER, json!({ "mode": "toggle", "shader": s("shader_path") }), vec![]),
         // OBS via Multi OBS Controller, which talks to OBS's built-in obs-websocket.
         "com_oparada1988_OBS_Plus::SwitchScene" => ("dev.theca11.multiobs.setscene", json!({ "params1": { "sceneName": s("scene") } }), vec![]),
         "com_oparada1988_OBS_Plus::ToggleRecord" => ("dev.theca11.multiobs.togglerecord", json!({}), vec![]),

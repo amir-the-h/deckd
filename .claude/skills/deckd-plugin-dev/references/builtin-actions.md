@@ -6,7 +6,6 @@ Built-ins run inside the daemon: no process, no WebSocket, direct access to devi
 |---|---|---|
 | `deckd.command`, `deckd.page`, `deckd.dial` | stateless: input → run something / navigate | `actions::run` in `src/actions.rs` |
 | `deckd.volume` | live external state pushed by a watcher, custom drawing | `src/audio.rs`, `volume_fire`/`volume_view` in `src/device.rs` |
-| `deckd.shader` | settings change on input (`index`), state polled while visible | `src/shader.rs`, `shader_fire`/`shader_view` |
 | `deckd.clock`, `deckd.media`, `deckd.mangohud` | redrawn on a 1 s tick while visible | `src/widgets.rs`, `tick_live`/`render_widget` |
 
 ## Steps
@@ -21,7 +20,7 @@ UUIDs starting with `deckd.` are treated as built-ins (`actions::is_builtin`).
 
 **Stateless** (fire-and-forget): add an arm to `actions::run(uuid, settings, fire)`. `Fire` is `Press`, `Rotate(ticks)`, `Touch` or `LongTouch`. Return `Some(Effect::…)` to ask the device to do something (switch page, brightness), else `None`. Use `spawn_shell` for commands — it detaches and reaps the child.
 
-**Needs device state or mutation:** handle it in `DeckActor::dispatch` (`src/device.rs`) next to the `VOLUME`/`SHADER` branches. `dispatch` only has `&self`; to change settings or state, return a new `Effect` variant (declare it in `actions.rs`) and handle it in `DeckActor::apply`, which has `&mut self`. See `Effect::ShaderIndex` — it updates `a.settings`, calls `save_page`, `mark_ctx` (redraw) and emits a `settings` hub event so the web UI refreshes.
+**Needs device state or mutation:** handle it in `DeckActor::dispatch` (`src/device.rs`) next to the `VOLUME` branch. `dispatch` only has `&self`; to change settings or state, return a new `Effect` variant (declare it in `actions.rs`) and handle it in `DeckActor::apply`, which has `&mut self`. To persist a settings change there, update the instance's `settings` (`instance_mut`), call `save_page`, `mark_ctx` (redraw) and emit a `settings` hub event so the web UI refreshes.
 
 Triggers are applied before your code: for presses, `dispatch` only calls you for actions whose trigger passes the filter, so you don't handle tap/hold yourself.
 

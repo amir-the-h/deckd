@@ -35,7 +35,6 @@ enum Event {
     Hw(DeviceStateUpdate),
     HoldTimer(InputId, u64),
     Redraw(String),
-    ShaderActive(String),
     Media(String, Option<crate::widgets::Media>),
     Disconnected,
 }
@@ -81,8 +80,6 @@ pub struct DeckActor {
     next_press: u64,
     live: HashMap<String, Live>,
     dirty: HashSet<InputId>,
-    /// Active Hyprland screen shader, once known.
-    shader_active: Option<String>,
     /// Latest MangoHud stats (None when no game is running).
     mango: Option<HashMap<String, f64>>,
     /// Now-playing info by player filter.
@@ -186,7 +183,6 @@ impl DeckActor {
             next_press: 0,
             live: HashMap::new(),
             dirty: HashSet::new(),
-            shader_active: None,
             mango: None,
             media: HashMap::new(),
             ticks: 0,
@@ -201,14 +197,11 @@ impl DeckActor {
         actor.enter_page(None).await;
         actor.hub.register(&actor.serial, crate::hub::DeckHandle { tx: utx, kind });
 
-        // Shader state can change outside deckd; re-check while a shader action is visible.
-        let mut shader_poll = tokio::time::interval(Duration::from_secs(4));
         // Clocks, game stats and now-playing update once a second, only while visible.
         let mut live_tick = tokio::time::interval(Duration::from_secs(1));
         live_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
-                _ = shader_poll.tick() => if actor.page_has(actions::SHADER) { actor.refresh_shader() },
                 _ = live_tick.tick() => actor.tick_live(),
                 ev = rx.recv() => match ev {
                     Some(Event::Disconnected) | None => break,
@@ -281,12 +274,6 @@ impl DeckActor {
                 if self.media.get(&filter) != Some(&info) {
                     self.media.insert(filter, info);
                     self.mark_uuid(actions::MEDIA);
-                }
-            }
-            Event::ShaderActive(path) => {
-                if self.shader_active.as_deref() != Some(path.as_str()) {
-                    self.shader_active = Some(path);
-                    self.mark_uuid(actions::SHADER);
                 }
             }
             Event::Disconnected => {}
@@ -487,63 +474,6 @@ impl DeckActor {
         })
     }
 
-    fn refresh_shader(&self) {
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            if let Some(active) = crate::shader::active().await {
-                let _ = tx.send(Event::ShaderActive(active));
-            }
-        });
-    }
-
-    /// What a shader action does for an input: pick another shader, or toggle one.
-    fn shader_fire(&self, a: &ActionInstance, fire: Fire) -> Option<Effect> {
-        let (mode, folder, index, fixed) = shader_settings(a);
-        match (mode.as_str(), fire) {
-            ("dial", Fire::Rotate(t)) => {
-                let n = crate::shader::list(&folder).len();
-                (n > 0).then(|| Effect::ShaderIndex { context: a.context.clone(), index: (index as i64 + t as i64).rem_euclid(n as i64) as usize })
-            }
-            ("dial", Fire::Press | Fire::Touch | Fire::LongTouch) => {
-                let list = crate::shader::list(&folder);
-                list.get(index % list.len().max(1)).map(|(_, p)| Effect::ShaderToggle(p.clone()))
-            }
-            (_, Fire::Press | Fire::Touch | Fire::LongTouch) if !fixed.is_empty() => Some(Effect::ShaderToggle(fixed)),
-            _ => None,
-        }
-    }
-
-    /// Labels for a shader action: name, ON/OFF and position, coloured like the original plugin.
-    fn shader_view(&self, a: &ActionInstance) -> State {
-        let (mode, folder, index, fixed) = shader_settings(a);
-        let accent = if folder == "animated" { ("#50b4ff", "#00b4ff") } else { ("#50dc50", "#00f000") };
-        let label = |text: String, size: f32, color: &str| Label { text, size: Some(size), color: Some(color.to_string()) };
-        let mut st = State::default();
-        let (name, path, counter) = if mode == "dial" {
-            let list = crate::shader::list(&folder);
-            if list.is_empty() {
-                st.labels.insert(LabelPos::Top, label("No shaders".into(), 16.0, "#b45050"));
-                return st;
-            }
-            let i = index % list.len();
-            (list[i].0.clone(), list[i].1.clone(), format!("{} / {}", i + 1, list.len()))
-        } else {
-            if fixed.is_empty() {
-                st.labels.insert(LabelPos::Top, label("No shader".into(), 16.0, "#969696"));
-                st.labels.insert(LabelPos::Center, label("configure".into(), 16.0, "#646464"));
-                return st;
-            }
-            let name = std::path::Path::new(&fixed).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            (name, fixed.clone(), "shader".to_string())
-        };
-        let on = self.shader_active.as_deref() == Some(path.as_str());
-        let display: String = name.replace(['-', '_'], " ").chars().take(18).collect();
-        st.labels.insert(LabelPos::Top, label(display, 15.0, if on { accent.0 } else { "#d2d2d2" }));
-        st.labels.insert(LabelPos::Center, label(if on { "ON" } else { "OFF" }.into(), 22.0, if on { accent.1 } else { "#a0a0a0" }));
-        st.labels.insert(LabelPos::Bottom, label(counter, 14.0, "#6e6e6e"));
-        st
-    }
-
     // ---------------------------------------------------------------- input
 
     async fn on_hw(&mut self, u: DeviceStateUpdate) {
@@ -659,8 +589,6 @@ impl DeckActor {
             }
             if action.uuid == actions::VOLUME {
                 self.volume_fire(action, fire);
-            } else if action.uuid == actions::SHADER {
-                effects.extend(self.shader_fire(action, fire));
             } else if matches!(action.uuid.as_str(), actions::MANGOHUD | actions::MEDIA | actions::CLOCK) {
                 self.widget_fire(action, fire);
             } else if actions::is_builtin(&action.uuid) {
@@ -1127,30 +1055,6 @@ impl DeckActor {
                 self.brightness = (self.brightness as i32 + delta).clamp(0, 100) as u8;
                 let _ = self.deck.set_brightness(self.brightness).await;
             }
-            Effect::ShaderIndex { context, index } => {
-                let Some((loc, a)) = self.instance_mut(&context) else { return };
-                if !a.settings.is_object() {
-                    a.settings = json!({});
-                }
-                a.settings["index"] = json!(index);
-                let page = loc.page.clone();
-                self.save_page(&page);
-                self.mark_ctx(&context);
-                self.hub.emit(json!({ "type": "settings", "serial": self.serial, "context": context }));
-            }
-            Effect::ShaderToggle(path) => {
-                let target = if self.shader_active.as_deref() == Some(path.as_str()) { String::new() } else { path };
-                // Show the result straight away; the follow-up query confirms it.
-                self.shader_active = Some(target.clone());
-                self.mark_uuid(actions::SHADER);
-                let tx = self.tx.clone();
-                tokio::spawn(async move {
-                    crate::shader::apply(&target).await;
-                    if let Some(active) = crate::shader::active().await {
-                        let _ = tx.send(Event::ShaderActive(active));
-                    }
-                });
-            }
         }
     }
 
@@ -1254,9 +1158,6 @@ impl DeckActor {
             self.appear(&prev, "willDisappear", None);
         }
         self.appear(&self.current.clone(), "willAppear", None);
-        if self.page_has(actions::SHADER) {
-            self.refresh_shader();
-        }
         self.ticks = 0;
         self.tick_live();
         let page_brightness = self.cfg.pages.get(&self.current).and_then(|p| p.brightness);
@@ -1416,21 +1317,6 @@ impl DeckActor {
         if let Some(a) = action.filter(|a| matches!(a.uuid.as_str(), actions::CLOCK | actions::MANGOHUD | actions::MEDIA)) {
             return self.render_widget(a, input);
         }
-        if let Some(a) = action.filter(|a| a.uuid == actions::SHADER) {
-            let mut st = self.shader_view(a);
-            // A user-chosen icon or background still applies.
-            if let Some(user) = a.current_state() {
-                st.image = user.image.clone();
-                st.background = user.background.clone();
-            }
-            return match input {
-                InputId::Key(_) => Some(self.renderer.render_key(self.kind.key_image_format().size.0 as u32, Some(&st), None)),
-                InputId::Dial(_) => {
-                    let (w, h) = self.kind.lcd_strip_size()?;
-                    Some(self.renderer.render_dial((w / self.kind.encoder_count() as usize) as u32, h as u32, Some(&st)))
-                }
-            };
-        }
         if let Some(a) = action.filter(|a| a.uuid == actions::VOLUME) {
             let (icon, name, percent, muted, is_default) = self.volume_view(a);
             let flash = self.live.get(&a.context).and_then(|l| l.flash.map(|(f, _)| f));
@@ -1557,12 +1443,4 @@ pub fn parse_input(s: &str) -> Option<InputId> {
         "dial" => Some(InputId::Dial(n)),
         _ => None,
     }
-}
-
-/// (mode "dial" | "toggle", folder, selected index, fixed shader path) for a `deckd.shader` action.
-fn shader_settings(a: &ActionInstance) -> (String, String, usize, String) {
-    let s = |k: &str| a.settings.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
-    let mode = if s("mode") == "toggle" { "toggle" } else { "dial" }.to_string();
-    let index = a.settings.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-    (mode, s("folder"), index, s("shader"))
 }
