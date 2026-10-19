@@ -27,7 +27,7 @@ Messages for your plugin that arrive before you register are queued and delivere
   "plugin": { "uuid": "com.example.myplugin", "version": "1.0.0" },
   "devicePixelRatio": 2,
   "colors": { "highlightColor": "#007AFFFF", "...": "..." },
-  "devices": [{ "id": "A00WA4331IJXQG", "name": "Stream Deck Plus", "size": { "columns": 4, "rows": 2 }, "type": 7 }]
+  "devices": [{ "id": "A00XX0000ABCDE", "name": "Stream Deck Plus", "size": { "columns": 4, "rows": 2 }, "type": 7 }]
 }
 ```
 Device `type` uses Elgato's ids: 0 Stream Deck, 1 Mini, 2 XL, 5 Pedal, 7 Stream Deck+, 9 Neo.
@@ -40,7 +40,7 @@ Common envelope for action events:
   "event": "keyDown",
   "action": "com.example.myplugin.hello",
   "context": "1f3c...",                 // stable per action instance, survives restarts
-  "device": "A00WA4331IJXQG",
+  "device": "A00XX0000ABCDE",
   "payload": {
     "settings": {},                      // always an object
     "coordinates": { "column": 2, "row": 1 },   // dials: { "column": <dial index>, "row": 0 }

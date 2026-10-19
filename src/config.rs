@@ -28,8 +28,8 @@ pub fn profile_dir(serial: &str) -> PathBuf {
     config_dir().join("profiles").join(serial)
 }
 
-/// The same deck reports a different serial over hidraw (`A00WA43...`) than over
-/// libusb (`WA43...`), so fall back to a profile whose name is a suffix of it.
+/// The same deck reports a different serial over hidraw (`A00XX00...`) than over
+/// libusb (`XX00...`), so fall back to a profile whose name is a suffix of it.
 fn find_profile_dir(serial: &str) -> PathBuf {
     let exact = profile_dir(serial);
     if exact.exists() {

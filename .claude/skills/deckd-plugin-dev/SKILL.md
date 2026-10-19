@@ -1,6 +1,6 @@
 ---
 name: deckd-plugin-dev
-description: How to build, install, test and debug plugins and actions for deckd, the Stream Deck daemon in this repo — both Elgato-format plugins (Node.js, HTML or native .sdPlugin folders that deckd hosts over the Stream Deck SDK WebSocket protocol) and native built-in actions written in Rust inside deckd. Use this whenever the user wants a new Stream Deck button, dial or touch-strip behaviour, a custom action, an integration with some app or service, a property inspector (settings panel), help porting a StreamController or Elgato plugin, or is debugging why a plugin doesn't start, register, draw or receive events in deckd — even if they just say "make a button that…" or "add an action for…".
+description: How to build, install, test and debug plugins and actions for deckd, the deck daemon in this repo — both Elgato-format plugins (Node.js, HTML or native .sdPlugin folders that deckd hosts over the Stream Deck SDK WebSocket protocol) and native built-in actions written in Rust inside deckd. Use this whenever the user wants a new Stream Deck button, dial or touch-strip behaviour, a custom action, an integration with some app or service, a property inspector (settings panel), help porting a StreamController or Elgato plugin, or is debugging why a plugin doesn't start, register, draw or receive events in deckd — even if they just say "make a button that…" or "add an action for…".
 ---
 
 # Developing plugins for deckd
@@ -14,7 +14,7 @@ deckd runs Stream Deck devices without the Elgato app. It hosts **Elgato-format 
 | it talks to an app, web service or device | it's a thin wrapper over a local command or system API |
 | it could be useful in the official Stream Deck app too | it should cost no extra process / RAM (Node plugins are ~40–60 MB each) |
 | it needs its own settings panel (HTML property inspector) | it needs deckd internals (page switching, device state, focus) |
-| the user wants to keep it separate from deckd's code | it's core OS functionality (audio, shaders, clock…) |
+| the user wants to keep it separate from deckd's code | it's core OS functionality (audio, clock, page switching…) |
 
 Default to an **Elgato-format plugin** — it's isolated, hot-restartable and portable. Reach for a built-in only for the cases on the right. For built-ins, read `references/builtin-actions.md` and stop here.
 

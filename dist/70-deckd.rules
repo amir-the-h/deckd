@@ -1,0 +1,4 @@
+# Lets the logged-in user open Elgato decks without root.
+# hidraw for normal use; usb so deckd can reset a deck another app left detached.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0fd9", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", TAG+="uaccess"

@@ -2,6 +2,12 @@
 name = "deckd"
 version = "0.1.0"
 edition = "2024"
+description = "Lightweight Linux daemon that drives Elgato Stream Deck hardware and hosts Elgato-format plugins"
+license = "MIT"
+repository = "https://github.com/amir-the-h/deckd"
+readme = "README.md"
+keywords = ["streamdeck", "linux", "daemon", "hyprland", "macropad"]
+categories = ["hardware-support", "command-line-utilities"]
 
 [dependencies]
 ab_glyph = "0.2.32"
