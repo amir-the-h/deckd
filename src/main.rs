@@ -12,6 +12,7 @@ mod layout;
 mod plugins;
 mod render;
 mod server;
+mod store;
 mod usbreset;
 mod widgets;
 
@@ -26,7 +27,7 @@ Built for Elgato Stream Deck hardware; runs Elgato-format plugins.
 USAGE:
     deckd                          run the daemon
     deckd devices                  list connected Stream Decks
-    deckd install PATH...          install .streamDeckPlugin files or .sdPlugin folders
+    deckd install PATH|URL...      install .streamDeckPlugin files, .sdPlugin folders or download links
     deckd import-streamcontroller [DIR] [--columns N]
                                    import pages from StreamController
     deckd preview SERIAL PAGE OUT.png
@@ -77,7 +78,23 @@ async fn main() -> Result<()> {
         }
         Some("install") if args.len() >= 2 => {
             for path in &args[1..] {
-                match installer::install(std::path::Path::new(path)).and_then(|d| plugins::manifest::load(&d)) {
+                let downloaded = if path.starts_with("https://") || path.starts_with("http://") {
+                    match store::download(path, None).await {
+                        Ok(tmp) => Some(tmp),
+                        Err(e) => {
+                            eprintln!("{path}: {e:#}");
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let src = downloaded.clone().unwrap_or_else(|| std::path::PathBuf::from(path));
+                let result = installer::install(&src).and_then(|d| plugins::manifest::load(&d));
+                if let Some(tmp) = downloaded {
+                    let _ = std::fs::remove_file(tmp);
+                }
+                match result {
                     Ok(p) => {
                         println!("installed {} {} -> {}", p.name, p.version, p.dir.display());
                         if p.runtime.is_none() {

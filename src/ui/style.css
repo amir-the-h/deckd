@@ -204,6 +204,10 @@ details.raw summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .pill.on { background: #3fb95022; color: #3fb950; }
 .pill.bad { background: #e5484d22; color: var(--danger); }
 .list-head { margin: 14px 2px 6px; }
+.row > .grow-0 { flex: none; }
+.source-head { display: flex; gap: 8px; align-items: baseline; margin: 10px 2px 2px; }
+.source-head .name { font-weight: 600; }
+.source-head .url { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 
 /* icon preview in inspector */
 .icon-current { display: flex; gap: 10px; align-items: center; }

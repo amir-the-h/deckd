@@ -68,7 +68,9 @@ Zip the folder so the archive contains the `<uuid>.sdPlugin/` directory at its t
 cd ~/dev/plugins && zip -r com.example.myplugin.streamDeckPlugin com.example.myplugin.sdPlugin -x '*/node_modules/.cache/*'
 ```
 
-Install with the UI (**Plugins → Install plugin or icon pack…**, takes effect immediately) or `deckd install file.streamDeckPlugin` followed by `systemctl --user restart deckd`. Don't enable Elgato Marketplace DRM if the plugin should run in deckd — DRM-encrypted manifests (files starting with `ELGATO`) can only be read by the official app.
+Install with the UI (**Plugins → Install plugin or icon pack…**, or paste a download link; takes effect immediately) or `deckd install file-or-url` followed by `systemctl --user restart deckd`.
+
+To let people install and update it from deckd's **Plugin sources**, publish the package next to an `index.json` (format in deckd's README) — e.g. as GitHub release assets, so the repository URL works as the source. deckd-plugins' `scripts/pack.sh` + `scripts/build-index.mjs` and its release workflow do exactly this. Don't enable Elgato Marketplace DRM if the plugin should run in deckd — DRM-encrypted manifests (files starting with `ELGATO`) can only be read by the official app.
 
 ## Manifest essentials
 

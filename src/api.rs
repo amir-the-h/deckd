@@ -41,6 +41,9 @@ pub fn routes() -> Router<AppState> {
         .route("/api/actions", get(catalog))
         .route("/api/plugins", get(list_plugins).post(install_plugin).layer(axum::extract::DefaultBodyLimit::max(512 << 20)))
         .route("/api/plugins/{uuid}", axum::routing::delete(uninstall_plugin))
+        .route("/api/plugins/url", post(install_from_url))
+        .route("/api/store", get(store))
+        .route("/api/store/sources", post(add_source).delete(remove_source))
         .route("/api/audio", get(audio_devices))
         .route("/api/windows", get(list_windows))
         .route("/api/icons", get(list_icons).post(upload_icon).layer(axum::extract::DefaultBodyLimit::max(8 << 20)))
@@ -234,6 +237,8 @@ async fn list_plugins(State(s): State<AppState>) -> Json<Value> {
                 "icon": p.icon.as_deref().and_then(image_url),
                 "runtime": plugins::runtime_name(&p.runtime),
                 "running": s.host.is_running(&p.uuid),
+                // Linked for development: installs from a source must not replace it.
+                "linked": std::fs::symlink_metadata(&p.dir).is_ok_and(|m| m.file_type().is_symlink()),
                 "actions": p.actions.iter().map(|a| a.uuid.clone()).collect::<Vec<_>>(),
             })
         })
@@ -256,6 +261,11 @@ async fn install_plugin(State(s): State<AppState>, Query(q): Query<InstallQuery>
     let name = Path::new(&q.name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "upload.zip".into());
     let tmp = tmp_dir.join(format!("{}-{name}", std::process::id()));
     std::fs::write(&tmp, &body).map_err(bad)?;
+    install_file(&s, tmp, &name).await
+}
+
+/// Installs a downloaded or uploaded package (plugin or icon pack, told apart by `name`), then deletes it.
+async fn install_file(s: &AppState, tmp: PathBuf, name: &str) -> ApiResult<Json<Value>> {
     if name.ends_with(".streamDeckIconPack") {
         let t = tmp.clone();
         let result = tokio::task::spawn_blocking(move || crate::icons::install_pack(&t)).await.map_err(bad)?;
@@ -270,6 +280,67 @@ async fn install_plugin(State(s): State<AppState>, Query(q): Query<InstallQuery>
     let p = result.map_err(|e| bad(format!("{e:#}")))?;
     s.hub.plugins_loaded(vec![p.uuid.clone()]);
     Ok(Json(json!({ "uuid": p.uuid, "name": p.name, "version": p.version, "runtime": plugins::runtime_name(&p.runtime) })))
+}
+
+#[derive(Deserialize)]
+struct UrlInstall {
+    url: String,
+    #[serde(default)]
+    sha256: Option<String>,
+}
+
+/// Downloads a `.streamDeckPlugin` (or icon pack) from a URL and installs it.
+async fn install_from_url(State(s): State<AppState>, Json(req): Json<UrlInstall>) -> ApiResult<Json<Value>> {
+    let tmp = crate::store::download(&req.url, req.sha256.as_deref()).await.map_err(|e| bad(format!("{e:#}")))?;
+    let name = tmp.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    install_file(&s, tmp, &name).await
+}
+
+/// Every source's plugins, each marked with what's installed here.
+async fn store(State(s): State<AppState>) -> Json<Value> {
+    let installed: std::collections::HashMap<String, (String, bool)> = s
+        .host
+        .plugins()
+        .iter()
+        .map(|p| (p.uuid.clone(), (p.version.clone(), std::fs::symlink_metadata(&p.dir).is_ok_and(|m| m.file_type().is_symlink()))))
+        .collect();
+    let urls = crate::store::sources();
+    let indexes = futures_util::future::join_all(urls.iter().map(|u| crate::store::fetch_index(u))).await;
+    let sources: Vec<Value> = urls
+        .iter()
+        .zip(indexes)
+        .map(|(url, index)| match index {
+            Ok(mut index) => {
+                for p in index["plugins"].as_array_mut().into_iter().flatten() {
+                    let uuid = p["uuid"].as_str().unwrap_or_default().to_string();
+                    if let Some((version, linked)) = installed.get(&uuid) {
+                        let offered = p["version"].as_str().unwrap_or_default().to_string();
+                        p["installed"] = json!(version);
+                        p["linked"] = json!(linked);
+                        p["update"] = json!(!linked && crate::store::newer(&offered, version));
+                    }
+                }
+                json!({ "url": url, "name": index["name"], "homepage": index["homepage"], "plugins": index["plugins"] })
+            }
+            Err(e) => json!({ "url": url, "error": format!("{e:#}"), "plugins": [] }),
+        })
+        .collect();
+    Json(json!({ "sources": sources }))
+}
+
+#[derive(Deserialize)]
+struct SourceReq {
+    url: String,
+}
+
+async fn add_source(Json(req): Json<SourceReq>) -> ApiResult<Json<Value>> {
+    let url = crate::store::add_source(&req.url).await.map_err(|e| bad(format!("{e:#}")))?;
+    Ok(Json(json!({ "url": url })))
+}
+
+async fn remove_source(Query(req): Query<SourceReq>) -> ApiResult<StatusCode> {
+    crate::store::remove_source(&req.url).map_err(bad)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn uninstall_plugin(State(s): State<AppState>, UrlPath(uuid): UrlPath<String>) -> ApiResult<StatusCode> {

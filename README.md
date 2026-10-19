@@ -70,9 +70,48 @@ deckd preview SERIAL PAGE OUT.png
                                render a Stream Deck+ page to an image
 ```
 
-Plugins can also be installed from the UI (**Plugins → Install plugin or icon
-pack…**). Plugins sold on the Elgato Marketplace with DRM can't be loaded; ask
-the author for a plain build.
+Plugins can also be installed from the UI: **Plugins → Install plugin or icon
+pack…** for a file, or paste a download link. `deckd install` accepts links
+too. Plugins sold on the Elgato Marketplace with DRM can't be loaded; ask the
+author for a plain build.
+
+### Plugin sources
+
+A plugin source is a list of plugins someone publishes. Add one under
+**Plugins → Plugin sources** and its plugins show up there with Install and
+Update buttons. A source can be:
+
+- a link to an `index.json`, or
+- a GitHub repository (`https://github.com/<owner>/<repo>`), which stands for
+  the `index.json` attached to its latest release.
+
+To publish your own, put the packages and an `index.json` next to each other,
+for example as release assets:
+
+```json
+{
+  "name": "My plugins",
+  "homepage": "https://example.com",
+  "plugins": [
+    {
+      "uuid": "com.example.thing",
+      "name": "Thing",
+      "version": "1.2.0",
+      "author": "You",
+      "description": "What it does",
+      "icon": "data:image/svg+xml;base64,…",
+      "url": "com.example.thing.streamDeckPlugin",
+      "sha256": "…"
+    }
+  ]
+}
+```
+
+`url` can be relative to the index. When `sha256` is given, deckd refuses a
+download that doesn't match it. Plugins you've linked into the plugins folder
+for development are marked "linked" and are never replaced by a source.
+[deckd-plugins](https://github.com/amir-the-h/deckd-plugins) has a script that
+builds the index, and a release workflow that publishes both.
 
 ## Configuration
 

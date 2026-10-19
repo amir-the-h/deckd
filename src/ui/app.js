@@ -575,7 +575,7 @@ function showTab(name) {
   $("#tab-library").classList.toggle("hidden", name !== "library");
   $("#tab-inspector").classList.toggle("hidden", name !== "inspector");
   $("#tab-plugins").classList.toggle("hidden", name !== "plugins");
-  if (name === "plugins") renderPlugins();
+  if (name === "plugins") { renderPlugins(); renderStore(); }
 }
 
 // ------------------------------------------------------------------ inspector
@@ -1311,8 +1311,103 @@ async function renderPlugins() {
         el("div", {},
           el("span", { class: `pill${p.runtime === "none" ? " bad" : ""}` }, runtime),
           p.running ? el("span", { class: "pill on" }, "running") : null,
+          p.linked ? el("span", { class: "pill", title: "A symlink to a folder elsewhere, e.g. a plugin you're developing" }, "linked") : null,
           pages.length ? el("span", { class: "pill" }, `used on ${pages.length} page${pages.length > 1 ? "s" : ""}`) : null)),
       remove));
+  }
+}
+
+// ------------------------------------------------------------------ plugin sources
+
+async function renderStore() {
+  const box = $("#plugin-store");
+  box.innerHTML = "";
+  box.append(el("h2", { class: "list-head" }, "Plugin sources"));
+  const form = el("form", { class: "row" },
+    el("input", { type: "url", placeholder: "Source URL or GitHub repository, e.g. https://github.com/amir-the-h/deckd-plugins", required: true }),
+    el("button", { class: "btn grow-0" }, "Add source"));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = form.querySelector("input"), btn = form.querySelector("button");
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    try {
+      await api("POST", "/api/store/sources", { url: input.value });
+      renderStore();
+    } catch (err) {
+      toast(`Couldn't add the source: ${err.message}`, true);
+      btn.disabled = false;
+      btn.textContent = "Add source";
+    }
+  });
+  box.append(form);
+  const loading = el("p", { class: "muted" }, "Loading sources…");
+  box.append(loading);
+  let data;
+  try { data = await api("GET", "/api/store"); } catch (e) { loading.textContent = e.message; return; }
+  loading.remove();
+  if (!data.sources.length) {
+    box.append(el("p", { class: "muted" }, "A source is a link to a plugin index (index.json), or a GitHub repository whose releases publish one. Its plugins show up here to install and update."));
+  }
+  for (const src of data.sources) {
+    const remove = el("button", { class: "btn small" }, "Remove");
+    remove.addEventListener("click", async () => {
+      await api("DELETE", `/api/store/sources?url=${encodeURIComponent(src.url)}`);
+      renderStore();
+    });
+    box.append(el("div", { class: "source-head" },
+      el("span", { class: "name" }, src.name || "Source"),
+      el("span", { class: "url", title: src.url }, src.url),
+      remove));
+    if (src.error) box.append(el("p", { class: "muted" }, `Unavailable: ${src.error}`));
+    for (const p of src.plugins) {
+      let action;
+      if (p.linked) action = el("span", { class: "pill", title: "Linked for development; installing would replace the link" }, "linked");
+      else if (p.installed && !p.update) action = el("span", { class: "pill on" }, "installed");
+      else {
+        action = el("button", { class: "btn small primary" }, p.update ? `Update to ${p.version}` : "Install");
+        action.addEventListener("click", async () => {
+          action.disabled = true;
+          action.textContent = "Installing…";
+          try {
+            const r = await api("POST", "/api/plugins/url", { url: p.url, sha256: p.sha256 });
+            toast(`Installed ${r.name} ${r.version}`);
+            await loadCatalog();
+            renderPlugins();
+            renderStore();
+          } catch (e) {
+            toast(`Install failed: ${e.message}`, true);
+            action.disabled = false;
+            action.textContent = p.update ? `Update to ${p.version}` : "Install";
+          }
+        });
+      }
+      box.append(el("div", { class: "plugin-item" },
+        p.icon ? el("img", { src: p.icon, alt: "" }) : el("div", { class: "noicon" }),
+        el("div", {},
+          el("div", { class: "name" }, p.name || p.uuid),
+          el("div", { class: "sub" }, `${p.author || "Unknown author"} · v${p.version || "?"}${p.installed && p.installed !== p.version ? ` (installed ${p.installed})` : ""}`),
+          p.description ? el("div", { class: "sub" }, p.description) : null),
+        action));
+    }
+  }
+}
+
+async function installFromUrl(url) {
+  const btn = $("#plugin-url-form button");
+  btn.disabled = true;
+  btn.textContent = "Installing…";
+  try {
+    const r = await api("POST", "/api/plugins/url", { url });
+    toast(r.iconPack ? `Installed icon pack ${r.iconPack}` : `Installed ${r.name} ${r.version}${r.runtime === "none" ? " — but it has no code that runs on Linux" : ""}`, r.runtime === "none");
+    $("#plugin-url").value = "";
+    await loadCatalog();
+    renderPlugins();
+  } catch (e) {
+    toast(`Install failed: ${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Install";
   }
 }
 
@@ -1363,6 +1458,7 @@ function init() {
   $("#search").addEventListener("input", renderLibrary);
   $("#plugin-install").addEventListener("click", () => $("#plugin-file").click());
   $("#plugin-file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) installFromFile(f); });
+  $("#plugin-url-form").addEventListener("submit", (e) => { e.preventDefault(); installFromUrl($("#plugin-url").value.trim()); });
   $("#picker-close").addEventListener("click", closePicker);
   $("#picker").addEventListener("click", (e) => { if (e.target.id === "picker") closePicker(); });
   $("#picker-search").addEventListener("input", runSearch);

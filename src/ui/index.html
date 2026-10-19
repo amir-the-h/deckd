@@ -64,8 +64,13 @@
         </div>
         <p class="muted">Accepts .streamDeckPlugin and .streamDeckIconPack files, e.g. downloaded from the Elgato Marketplace.</p>
         <input id="plugin-file" type="file" accept=".streamDeckPlugin,.streamDeckIconPack,.zip" class="hidden">
+        <form id="plugin-url-form" class="row">
+          <input id="plugin-url" type="url" placeholder="…or paste a download link" required>
+          <button class="btn grow-0">Install</button>
+        </form>
       </div>
       <div id="plugin-list" class="stack"></div>
+      <div id="plugin-store" class="stack"></div>
     </div>
   </aside>
 </main>
