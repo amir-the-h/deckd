@@ -43,6 +43,10 @@ work too.
 
 ## Install
 
+[Releases](https://github.com/amir-the-h/deckd/releases) have prebuilt
+binaries for x86_64 and aarch64 (glibc 2.35 or newer); each tarball holds
+`deckd` and the `dist/` files used below. To build it yourself instead:
+
 ```bash
 cargo build --release
 install -Dm755 target/release/deckd ~/.local/bin/deckd

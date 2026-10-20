@@ -1,0 +1,92 @@
+# Build and publish deckd when a version tag (vX.Y.Z, matching Cargo.toml) is pushed.
+# The release holds one tarball per architecture with the binary, the udev rule and
+# the systemd unit, plus SHA256SUMS.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    # The oldest supported Ubuntu, so the binary runs on any glibc since 2.35.
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match Cargo.toml version $version"
+            exit 1
+          fi
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test --locked --release
+
+      - name: Build
+        run: cargo build --locked --release
+
+      - name: Package
+        run: |
+          name="deckd-$GITHUB_REF_NAME-${{ matrix.arch }}-linux"
+          mkdir -p "$name/dist"
+          cp target/release/deckd LICENSE README.md "$name/"
+          cp dist/70-deckd.rules dist/deckd.service "$name/dist/"
+          strip "$name/deckd"
+          tar -czf "$name.tar.gz" "$name"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}
+          path: deckd-*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create releases
+    steps:
+      - name: Download builds
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Checksums
+        run: sha256sum deckd-*.tar.gz > SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            deckd-*.tar.gz
+            SHA256SUMS
+          generate_release_notes: true
+          body: |
+            Linux builds for x86_64 and aarch64 (glibc 2.35 or newer, libudev). To install:
+
+            ```bash
+            tar -xzf deckd-${{ github.ref_name }}-x86_64-linux.tar.gz
+            cd deckd-${{ github.ref_name }}-x86_64-linux
+            install -Dm755 deckd ~/.local/bin/deckd
+            sudo install -m644 dist/70-deckd.rules /etc/udev/rules.d/
+            sudo udevadm control --reload && sudo udevadm trigger
+            install -Dm644 dist/deckd.service ~/.config/systemd/user/deckd.service
+            systemctl --user enable --now deckd
+            ```
