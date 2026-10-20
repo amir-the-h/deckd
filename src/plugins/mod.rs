@@ -109,6 +109,69 @@ fn load_plugin(dir: &Path) -> Option<PluginInfo> {
     }
 }
 
+/// Splits plugin links into those whose target is a directory and those still
+/// missing. Looking at a path under an automount point that isn't mounted yet
+/// makes systemd try to mount it, and after a few quick failures (no network
+/// yet at boot) systemd stops trying until reset by root. So only one link per
+/// unmounted automount point is probed each pass; the rest wait for the next.
+fn probe_links(links: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo").map(|s| parse_mountinfo(&s)).unwrap_or_default();
+    let mut failed: HashSet<PathBuf> = HashSet::new();
+    let (mut ready, mut missing) = (Vec::new(), Vec::new());
+    for link in links {
+        let target = std::fs::read_link(&link).map(|t| link.parent().unwrap_or(Path::new("/")).join(t)).unwrap_or_default();
+        let automount = unmounted_automount(&target, &mounts);
+        if automount.as_ref().is_some_and(|m| failed.contains(m)) {
+            missing.push(link);
+        } else if link.is_dir() {
+            ready.push(link);
+        } else {
+            failed.extend(automount);
+            missing.push(link);
+        }
+    }
+    (ready, missing)
+}
+
+/// Mount points from /proc/self/mountinfo in mount order, each with whether
+/// it's an autofs mount.
+fn parse_mountinfo(s: &str) -> Vec<(PathBuf, bool)> {
+    s.lines()
+        .filter_map(|line| {
+            let mut fields = line.split(' ');
+            let point = fields.nth(4)?;
+            let fstype = fields.skip_while(|f| *f != "-").nth(1)?;
+            Some((PathBuf::from(unescape_mountinfo(point)), fstype == "autofs"))
+        })
+        .collect()
+}
+
+/// Undoes mountinfo's octal escapes (`\040` for a space, and so on).
+fn unescape_mountinfo(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' && i + 3 < b.len() && b[i + 1..i + 4].iter().all(|c| (b'0'..=b'7').contains(c)) {
+            out.push((b[i + 1] - b'0') * 64 + (b[i + 2] - b'0') * 8 + (b[i + 3] - b'0'));
+            i += 4;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The automount point holding `path`, if the deepest mount covering it is an
+/// autofs mount with nothing mounted over it yet.
+fn unmounted_automount(path: &Path, mounts: &[(PathBuf, bool)]) -> Option<PathBuf> {
+    // A later mount on the same point hides earlier ones; max_by_key returns the
+    // last of equal maxima, so that's the one picked.
+    let (point, autofs) = mounts.iter().filter(|(p, _)| path.starts_with(p)).max_by_key(|(p, _)| p.components().count())?;
+    autofs.then(|| point.clone())
+}
+
 fn data_dir() -> PathBuf {
     config::config_dir().join("plugin-data")
 }
@@ -116,25 +179,29 @@ fn data_dir() -> PathBuf {
 impl Host {
     pub fn load(port: u16) -> Arc<Host> {
         let mut catalog = Catalog::default();
-        let mut pending = Vec::new();
+        let mut dirs = Vec::new();
+        let mut links = Vec::new();
         if let Ok(entries) = std::fs::read_dir(plugins_dir()) {
             for entry in entries.flatten() {
-                let dir = entry.path();
                 // Dot-folders are installs in progress.
                 if entry.file_name().to_string_lossy().starts_with('.') {
                     continue;
                 }
-                if !dir.is_dir() {
-                    if dir.is_symlink() {
-                        let target = std::fs::read_link(&dir).unwrap_or_default();
-                        tracing::warn!("plugin link {} points to missing {}; will load it when it appears", dir.display(), target.display());
-                        pending.push(dir);
-                    }
-                    continue;
+                match entry.file_type() {
+                    Ok(t) if t.is_symlink() => links.push(entry.path()),
+                    Ok(t) if t.is_dir() => dirs.push(entry.path()),
+                    _ => {}
                 }
-                if let Some(p) = load_plugin(&dir) {
-                    catalog.insert(p);
-                }
+            }
+        }
+        let (ready, pending) = probe_links(links);
+        for dir in &pending {
+            let target = std::fs::read_link(dir).unwrap_or_default();
+            tracing::warn!("plugin link {} points to missing {}; will load it when it appears", dir.display(), target.display());
+        }
+        for dir in dirs.iter().chain(&ready) {
+            if let Some(p) = load_plugin(dir) {
+                catalog.insert(p);
             }
         }
         Arc::new(Host { catalog: std::sync::RwLock::new(catalog), pending: Mutex::new(pending), port, node: find_node(), inner: Mutex::new(Inner::default()) })
@@ -150,12 +217,14 @@ impl Host {
     pub fn load_pending(&self) -> Vec<String> {
         let ready: Vec<PathBuf> = {
             let mut pending = self.pending.lock().unwrap();
-            let (ready, still): (Vec<_>, Vec<_>) = pending.drain(..).partition(|d| d.is_dir() || !d.is_symlink());
+            // Links removed meanwhile are dropped.
+            let links = pending.drain(..).filter(|d| d.is_symlink()).collect();
+            let (ready, still) = probe_links(links);
             *pending = still;
             ready
         };
         let mut added = Vec::new();
-        for dir in ready.iter().filter(|d| d.is_dir()) {
+        for dir in &ready {
             if let Some(p) = load_plugin(dir) {
                 if self.plugin(&p.uuid).is_none() {
                     added.push(p.uuid.clone());
@@ -670,4 +739,30 @@ fn ensure_executable(path: &Path) {
 
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MOUNTINFO: &str = "\
+32 2 0:29 /@ / rw,relatime shared:1 - btrfs /dev/mapper/root rw,subvol=/@
+58 32 0:49 / /mnt/shared rw,relatime shared:95 - autofs systemd-1 rw,fd=166,direct
+55 32 0:48 / /mnt/media rw,relatime shared:92 - autofs systemd-1 rw,fd=93,direct
+306 58 0:90 / /mnt/media rw,relatime shared:332 - nfs4 192.168.1.101:/mnt/storage/media rw
+70 32 0:51 / /mnt/my\\040disk rw,relatime shared:99 - autofs systemd-1 rw,direct
+";
+
+    #[test]
+    fn finds_unmounted_automount_points() {
+        let mounts = parse_mountinfo(MOUNTINFO);
+        let at = |p: &str| unmounted_automount(Path::new(p), &mounts);
+        assert_eq!(at("/mnt/shared/projects/x.sdPlugin"), Some(PathBuf::from("/mnt/shared")));
+        assert_eq!(at("/mnt/my disk/x.sdPlugin"), Some(PathBuf::from("/mnt/my disk")));
+        // Mounted over by NFS already.
+        assert_eq!(at("/mnt/media/x.sdPlugin"), None);
+        assert_eq!(at("/home/me/x.sdPlugin"), None);
+        // Prefix match is by path component, not string.
+        assert_eq!(at("/mnt/sharedstuff/x.sdPlugin"), None);
+    }
 }
