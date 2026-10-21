@@ -219,7 +219,7 @@ fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {
     let id = a.get("id")?.as_str()?;
     let settings = a.get("settings").cloned().unwrap_or(Value::Null);
     let s = |k: &str| settings.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
-    let trigger = trigger_of(a.get("event-assignments"));
+    let triggers: Vec<Trigger> = trigger_of(a.get("event-assignments")).into_iter().collect();
 
     let (uuid, new_settings, states) = match id {
         "com_core447_DeckPlugin::ChangePage" => {
@@ -280,14 +280,14 @@ fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {
             (actions::VOLUME, json!({ "device": s("pulse-name"), "kind": kind }), vec![])
         }
         "com_gapls_AudioControl::Mute" | "com_gapls_AudioControl::SetDefaultDevice" => {
-            return Some(ActionInstance { uuid: format!("drop:{id}"), settings, trigger, ..Default::default() });
+            return Some(ActionInstance { uuid: format!("drop:{id}"), settings, triggers, ..Default::default() });
         }
         other => {
             *ctx.unmapped.entry(other.to_string()).or_default() += 1;
-            return Some(ActionInstance { uuid: format!("sc:{other}"), settings, trigger, ..Default::default() });
+            return Some(ActionInstance { uuid: format!("sc:{other}"), settings, triggers, ..Default::default() });
         }
     };
-    Some(ActionInstance { uuid: uuid.into(), settings: new_settings, trigger, states, ..Default::default() })
+    Some(ActionInstance { uuid: uuid.into(), settings: new_settings, triggers, states, ..Default::default() })
 }
 
 /// StreamController remaps physical events onto an action's "Key Down"; recover tap/hold from that.

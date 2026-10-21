@@ -20,8 +20,9 @@ app.
 - **Built-in actions** that need no plugin process: switch page, run command,
   dial commands, brightness, audio volume (PulseAudio/PipeWire), clock,
   now-playing and media keys (MPRIS) and MangoHud stats.
-- **Several actions per key or dial**, each bound to a tap, a hold or a
-  turn direction.
+- **Several actions per key or dial**, each bound to any mix of press, tap,
+  double tap, hold, long press, turn (either way, left or right), touch and
+  long touch. An action with nothing picked gets whatever the others don't use.
 - **Automatic page switching** by focused window (class, title or "any Steam
   game") on Hyprland.
 - **StreamController import**: `deckd import-streamcontroller` converts your

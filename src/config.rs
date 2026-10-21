@@ -7,8 +7,8 @@
 //!
 //! The action model follows the Elgato SDK (an action instance has a UUID,
 //! settings and a list of visual states) and extends it the way StreamController
-//! does: a slot may hold several actions, each optionally bound to a trigger
-//! (tap vs. hold), with one of them driving the visuals.
+//! does: a slot may hold several actions, each bound to the gestures that fire
+//! it (tap, hold, turn, touch…), with one of them driving the visuals.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -109,6 +109,52 @@ impl Slot {
     pub fn display_action(&self) -> Option<&ActionInstance> {
         self.actions.get(self.display).or(self.actions.first())
     }
+
+    fn claims(&self, f: impl Fn(Trigger) -> bool) -> bool {
+        self.actions.iter().any(|a| a.triggers.iter().any(|&t| f(t)))
+    }
+
+    /// Whether `a` gets the raw press and release, as in Elgato's software. True for an action
+    /// without triggers, unless another action in the slot is bound to a press gesture; then it
+    /// fires on tap instead, so a hold doesn't also run it.
+    pub fn raw_press(&self, a: &ActionInstance) -> bool {
+        a.triggers.is_empty() && !self.claims(Trigger::is_press)
+    }
+
+    /// Whether `gesture` fires `a`. An action without triggers takes whatever no other action in
+    /// the slot is bound to.
+    pub fn fires(&self, a: &ActionInstance, gesture: Gesture) -> bool {
+        use Trigger::*;
+        let holding = || self.claims(|t| matches!(t, Hold | Long));
+        if a.triggers.is_empty() {
+            return match gesture {
+                Gesture::Down => !self.claims(Trigger::is_press),
+                // A press too long to be a tap still counts as one when nothing is bound to holding.
+                Gesture::Tap => self.claims(Trigger::is_press),
+                Gesture::Long => self.claims(Trigger::is_press) && !holding(),
+                Gesture::Double | Gesture::Hold => false,
+                Gesture::Turn(cw) => !self.claims(|t| t == Turn || t == if cw { Cw } else { Ccw }),
+                Gesture::Step(_) => false,
+                Gesture::Touch => !self.claims(|t| t == Touch),
+                Gesture::LongTouch => !self.claims(|t| matches!(t, Touch | LongTouch)),
+            };
+        }
+        a.triggers.iter().any(|&t| match (t, gesture) {
+            (Down, Gesture::Down) | (Tap, Gesture::Tap) | (Double, Gesture::Double) => true,
+            (Hold, Gesture::Hold) | (Long, Gesture::Long) | (Turn, Gesture::Turn(_)) => true,
+            (Tap, Gesture::Long) => !holding(),
+            (Cw, Gesture::Step(cw)) | (Ccw, Gesture::Step(cw)) => cw == (t == Cw),
+            (Touch, Gesture::Touch) | (LongTouch, Gesture::LongTouch) => true,
+            // A long touch is still a touch when nothing is bound to it.
+            (Touch, Gesture::LongTouch) => !self.claims(|t| t == LongTouch),
+            _ => false,
+        })
+    }
+
+    /// Whether a tap must wait to see if a second one follows.
+    pub fn wants_double(&self) -> bool {
+        self.claims(|t| t == Trigger::Double)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,8 +163,10 @@ pub struct ActionInstance {
     pub uuid: String,
     #[serde(skip_serializing_if = "Value::is_null")]
     pub settings: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<Trigger>,
+    /// Gestures that fire this action; none means the slot's leftover input (see `Slot::fires`).
+    /// Older pages hold a single `trigger`.
+    #[serde(alias = "trigger", deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<Trigger>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<State>,
     #[serde(skip_serializing_if = "is_zero")]
@@ -134,7 +182,7 @@ impl Default for ActionInstance {
         Self {
             uuid: String::new(),
             settings: Value::Null,
-            trigger: None,
+            triggers: Vec::new(),
             states: Vec::new(),
             state: 0,
             context: String::new(),
@@ -148,7 +196,7 @@ impl ActionInstance {
     }
 }
 
-/// When an action fires relative to the physical press.
+/// A gesture an action can be bound to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Trigger {
@@ -156,12 +204,60 @@ pub enum Trigger {
     Down,
     /// On release, if released before the hold threshold.
     Tap,
+    /// On the second of two quick taps.
+    Double,
     /// Once the press has lasted the hold threshold.
     Hold,
-    /// When a dial is turned clockwise.
+    /// On release, after a press that lasted the hold threshold.
+    Long,
+    /// When a dial is turned either way; the action gets the turn itself.
+    Turn,
+    /// When a dial is turned clockwise; fires like a press per turn.
     Cw,
-    /// When a dial is turned counter-clockwise.
+    /// When a dial is turned counter-clockwise; fires like a press per turn.
     Ccw,
+    /// When a dial's touch strip segment is tapped.
+    Touch,
+    /// When a dial's touch strip segment is long-pressed.
+    #[serde(rename = "longtouch")]
+    LongTouch,
+}
+
+impl Trigger {
+    fn is_press(self) -> bool {
+        matches!(self, Trigger::Down | Trigger::Tap | Trigger::Double | Trigger::Hold | Trigger::Long)
+    }
+}
+
+/// What the user did to a slot, matched against triggers by `Slot::fires`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gesture {
+    Down,
+    Tap,
+    Double,
+    Hold,
+    Long,
+    /// A turn, delivered as a turn (`true` = clockwise).
+    Turn(bool),
+    /// A turn, delivered as a press to direction-bound actions.
+    Step(bool),
+    Touch,
+    LongTouch,
+}
+
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Trigger>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Trigger),
+        Many(Vec<Trigger>),
+        None(()),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(t) => vec![t],
+        OneOrMany::Many(v) => v,
+        OneOrMany::None(()) => Vec::new(),
+    })
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -263,4 +359,56 @@ pub fn assign_contexts(page: &mut Page) -> bool {
 /// Page names become file names; keep them to something safe.
 pub fn valid_page_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && !name.starts_with('.') && !name.contains(['/', '\\', '\0'])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(json: &str) -> Slot {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn reads_old_single_trigger() {
+        let s = slot(r#"{"actions":[{"uuid":"a","trigger":"hold"},{"uuid":"b","triggers":["tap","longtouch"]},{"uuid":"c"}]}"#);
+        assert_eq!(s.actions[0].triggers, [Trigger::Hold]);
+        assert_eq!(s.actions[1].triggers, [Trigger::Tap, Trigger::LongTouch]);
+        assert!(s.actions[2].triggers.is_empty());
+        let out = serde_json::to_value(&s.actions[0]).unwrap();
+        assert_eq!(out["triggers"], serde_json::json!(["hold"]));
+        assert!(out.get("trigger").is_none());
+    }
+
+    #[test]
+    fn unbound_action_takes_leftover_input() {
+        let s = slot(r#"{"actions":[{"uuid":"hold","triggers":["hold"]},{"uuid":"rest"}]}"#);
+        let (hold, rest) = (&s.actions[0], &s.actions[1]);
+        // Pressing is claimed, so the unbound action acts on tap rather than raw down/up.
+        assert!(!s.raw_press(rest));
+        assert!(!s.fires(rest, Gesture::Down) && s.fires(rest, Gesture::Tap));
+        assert!(!s.fires(rest, Gesture::Long), "a hold is bound, so a long press isn't a tap");
+        assert!(s.fires(hold, Gesture::Hold) && !s.fires(hold, Gesture::Tap));
+        // Turning and touching aren't claimed.
+        assert!(s.fires(rest, Gesture::Turn(true)) && s.fires(rest, Gesture::Touch));
+        assert!(!s.fires(hold, Gesture::Turn(true)) && !s.fires(hold, Gesture::Touch));
+    }
+
+    #[test]
+    fn dial_gestures_split_between_actions() {
+        let s = slot(r#"{"actions":[{"uuid":"vol","triggers":["turn"]},{"uuid":"scene","triggers":["touch"]},{"uuid":"cw","triggers":["cw"]},{"uuid":"rest"}]}"#);
+        let [vol, scene, cw, rest] = [0, 1, 2, 3].map(|i| &s.actions[i]);
+        assert!(s.fires(vol, Gesture::Turn(false)) && !s.fires(vol, Gesture::Touch));
+        assert!(s.fires(scene, Gesture::Touch) && s.fires(scene, Gesture::LongTouch));
+        assert!(s.fires(cw, Gesture::Step(true)) && !s.fires(cw, Gesture::Step(false)));
+        assert!(!s.fires(rest, Gesture::Turn(true)) && !s.fires(rest, Gesture::Touch));
+        assert!(s.raw_press(rest) && s.fires(rest, Gesture::Down));
+    }
+
+    #[test]
+    fn tap_covers_slow_presses_unless_holding_is_bound() {
+        let s = slot(r#"{"actions":[{"uuid":"a","triggers":["tap"]},{"uuid":"b","triggers":["double"]}]}"#);
+        assert!(s.fires(&s.actions[0], Gesture::Long));
+        assert!(s.wants_double() && s.fires(&s.actions[1], Gesture::Double) && !s.fires(&s.actions[0], Gesture::Double));
+    }
 }

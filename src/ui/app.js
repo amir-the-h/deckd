@@ -613,6 +613,20 @@ function renderInspector() {
   root.append(renderAppearance(slot));
 }
 
+/** Gestures an action can be bound to; see Trigger in config.rs. */
+const TRIGGERS = [
+  { id: "down", name: "Press", tip: "As soon as it's pressed" },
+  { id: "tap", name: "Tap", tip: "On release after a short press (or any press, if nothing is bound to holding)" },
+  { id: "double", name: "Double tap", tip: "On the second of two quick taps; single taps then wait a moment" },
+  { id: "hold", name: "Hold", tip: "Once it has been held for half a second" },
+  { id: "long", name: "Long press", tip: "On release after holding for half a second" },
+  { id: "turn", name: "Turn", tip: "Turning either way; the action gets the turn itself (e.g. volume)", dial: true },
+  { id: "cw", name: "Turn right", tip: "Each step clockwise acts like a press", dial: true },
+  { id: "ccw", name: "Turn left", tip: "Each step counter-clockwise acts like a press", dial: true },
+  { id: "touch", name: "Touch", tip: "Tapping the dial's part of the touch strip", dial: true },
+  { id: "longtouch", name: "Long touch", tip: "Long-pressing the dial's part of the touch strip", dial: true },
+];
+
 function renderStack() {
   const section = $("#stack-section");
   const slot = S.sel && getSlot(S.sel);
@@ -626,26 +640,30 @@ function renderStack() {
   slot.actions.forEach((a, i) => {
     const meta = actionMeta(a.uuid);
     const isDial = S.sel.startsWith("dial");
-    const trig = el("select", {
-      title: "When this action fires",
-      onclick: (e) => e.stopPropagation(),
-      onchange: (e) => {
-        const v = e.target.value;
-        const act = getSlot(S.sel)?.actions[i];
-        if (!act) return;
-        if (v) act.trigger = v; else delete act.trigger;
-        savePage();
-      },
-    },
-      el("option", { value: "" }, "Default"),
-      el("option", { value: "down" }, "On press"),
-      el("option", { value: "tap" }, "On tap"),
-      el("option", { value: "hold" }, "On hold"),
-      isDial ? el("option", { value: "cw" }, "Turn right") : null,
-      isDial ? el("option", { value: "ccw" }, "Turn left") : null);
-    trig.value = a.trigger || "";
+    const triggers = a.triggers || (a.trigger ? [a.trigger] : []);
+    const offered = TRIGGERS.filter((t) => isDial || !t.dial);
+    const bound = offered.filter((t) => triggers.includes(t.id));
+    const summary = bound.length ? bound.map((t) => t.name.toLowerCase()).join(", ") : multi ? "whatever is left" : "everything";
+    const chips = i === S.selAction ? el("div", { class: "triggers", onclick: (e) => e.stopPropagation() },
+      ...offered.map((t) => el("button", {
+        class: `chip${triggers.includes(t.id) ? " on" : ""}`, title: t.tip,
+        onclick: () => {
+          const act = getSlot(S.sel)?.actions[i];
+          if (!act) return;
+          const cur = new Set(act.triggers || (act.trigger ? [act.trigger] : []));
+          cur.has(t.id) ? cur.delete(t.id) : cur.add(t.id);
+          delete act.trigger;
+          // Keep the order of TRIGGERS so the page file reads naturally.
+          const next = TRIGGERS.map((x) => x.id).filter((id) => cur.has(id));
+          if (next.length) act.triggers = next; else delete act.triggers;
+          savePage();
+          renderStack();
+        },
+      }, t.name)),
+      el("p", { class: "muted" }, triggers.length
+        ? "Fires only on the gestures picked here."
+        : multi ? "No gestures picked: fires on whatever the other actions here don't use." : "No gestures picked: gets every press, turn and touch.")) : null;
     const controls = el("div", { class: "controls" },
-      multi ? trig : null,
       multi ? el("button", {
         class: "btn small", title: "Show this action's picture on the deck",
         onclick: (e) => { e.stopPropagation(); getSlot(S.sel).display = i; savePage().then(() => { refreshSlot(S.sel); renderInspector(); }); },
@@ -670,12 +688,13 @@ function renderStack() {
       onclick: () => { if (S.selAction !== i) { S.selAction = i; unmountPI(); renderInspector(); } },
     },
       meta.icon ? el("img", { src: meta.icon, alt: "" }) : el("img", { alt: "" }),
-      el("div", {}, el("div", { class: "name" }, meta.name), el("div", { class: "sub" }, meta.pluginName)),
-      controls));
+      el("div", {}, el("div", { class: "name" }, meta.name), el("div", { class: "sub" }, `${meta.pluginName} · on ${summary}`)),
+      controls,
+      chips));
   });
   section.append(stack);
   if (!multi) {
-    section.append(el("p", { class: "muted" }, "Add more actions to run several from one slot, e.g. one on tap and another on hold."));
+    section.append(el("p", { class: "muted" }, "Add more actions to run several from one slot, e.g. one on tap and another on hold, or one on turn and another on touch."));
   }
 }
 

@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
 
 use crate::actions::{self, Effect, Fire};
-use crate::config::{self, ActionInstance, DeviceConfig, Label, LabelPos, Slot, State, Trigger};
+use crate::config::{self, ActionInstance, DeviceConfig, Gesture, Label, LabelPos, Slot, State};
 use crate::layout::Layout;
 use crate::plugins::{Host, ToDeck};
 use crate::audio::{self, AudioWatch};
@@ -22,6 +22,8 @@ use crate::render::{icons, ClockColors, Flash, Renderer};
 use image::DynamicImage;
 
 const HOLD_THRESHOLD: Duration = Duration::from_millis(500);
+/// How long a tap waits for a second one, on slots with a double-tap action.
+const DOUBLE_TAP: Duration = Duration::from_millis(300);
 const FLASH_TIME: Duration = Duration::from_millis(1200);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,6 +36,7 @@ pub enum InputId {
 enum Event {
     Hw(DeviceStateUpdate),
     HoldTimer(InputId, u64),
+    TapTimer(InputId, u64),
     Redraw(String),
     Media(String, Option<crate::widgets::Media>),
     Disconnected,
@@ -78,6 +81,8 @@ pub struct DeckActor {
     brightness: u8,
     presses: HashMap<InputId, Press>,
     next_press: u64,
+    /// A tap waiting to see if it becomes a double tap: press id and page.
+    taps: HashMap<InputId, (u64, String)>,
     live: HashMap<String, Live>,
     dirty: HashSet<InputId>,
     /// Latest MangoHud stats (None when no game is running).
@@ -181,6 +186,7 @@ impl DeckActor {
             history: Vec::new(),
             presses: HashMap::new(),
             next_press: 0,
+            taps: HashMap::new(),
             live: HashMap::new(),
             dirty: HashSet::new(),
             mango: None,
@@ -262,6 +268,11 @@ impl DeckActor {
         match ev {
             Event::Hw(u) => self.on_hw(u).await,
             Event::HoldTimer(input, id) => self.on_hold(input, id).await,
+            Event::TapTimer(input, id) => {
+                if let Some((_, page)) = self.taps.remove(&input).filter(|(t, _)| *t == id) {
+                    self.tap(input, &page, Gesture::Tap).await;
+                }
+            }
             Event::Redraw(ctx) => {
                 if let Some(live) = self.live.get_mut(&ctx) {
                     if live.flash.is_some_and(|(_, t)| t.elapsed() >= FLASH_TIME) {
@@ -509,22 +520,24 @@ impl DeckActor {
             DeviceStateUpdate::EncoderTwist(d, ticks) => {
                 let input = InputId::Dial(d);
                 let pressed = self.presses.contains_key(&input);
-                let dir = if ticks > 0 { Trigger::Cw } else { Trigger::Ccw };
-                self.dispatch(input, &page, Fire::Rotate(ticks), |t| t.is_none(), |me, a| {
+                let cw = ticks > 0;
+                self.dispatch(input, &page, Gesture::Turn(cw), Fire::Rotate(ticks), |me, a| {
                     if me.supports_encoder(a) {
                         me.send_plugin("dialRotate", a, input, json!({ "ticks": ticks, "pressed": pressed }));
+                    } else if !a.triggers.is_empty() {
+                        me.send_click(a, input);
                     }
                 })
                 .await;
                 // Direction-bound actions act like a button click per turn.
-                self.dispatch(input, &page, Fire::Press, |t| t == Some(dir), |me, a| me.send_click(a, input)).await;
+                self.dispatch(input, &page, Gesture::Step(cw), Fire::Press, |me, a| me.send_click(a, input)).await;
             }
             DeviceStateUpdate::TouchScreenPress(x, y) | DeviceStateUpdate::TouchScreenLongPress(x, y) => {
                 let long = matches!(u, DeviceStateUpdate::TouchScreenLongPress(..));
                 let (d, local_x) = self.segment_at(x);
                 let input = InputId::Dial(d);
-                let fire = if long { Fire::LongTouch } else { Fire::Touch };
-                self.dispatch(input, &page, fire, |_| true, |me, a| {
+                let (gesture, fire) = if long { (Gesture::LongTouch, Fire::LongTouch) } else { (Gesture::Touch, Fire::Touch) };
+                self.dispatch(input, &page, gesture, fire, |me, a| {
                     if me.supports_encoder(a) {
                         me.send_plugin("touchTap", a, input, json!({ "tapPos": [local_x, y], "hold": long }));
                     } else {
@@ -559,56 +572,61 @@ impl DeckActor {
             let _ = tx.send(Event::HoldTimer(input, id));
         });
 
-        // Untriggered plugin actions get the raw down event; triggered ones get a full click later.
-        self.dispatch(input, &page, Fire::Press, |t| t.is_none(), |me, a| me.send_down(a, input)).await;
-        self.dispatch(input, &page, Fire::Press, |t| t == Some(Trigger::Down), |me, a| me.send_click(a, input)).await;
+        // Actions with the raw press get the down event now; bound ones get a full click.
+        self.dispatch(input, &page, Gesture::Down, Fire::Press, |me, a| {
+            if a.triggers.is_empty() {
+                me.send_down(a, input);
+            } else {
+                me.send_click(a, input);
+            }
+        })
+        .await;
     }
 
     async fn on_hold(&mut self, input: InputId, id: u64) {
         let Some(press) = self.presses.get_mut(&input).filter(|p| p.id == id) else { return };
         press.held = true;
         let page = press.page.clone();
-        self.dispatch(input, &page, Fire::Press, |t| t == Some(Trigger::Hold), |me, a| me.send_click(a, input)).await;
+        self.dispatch(input, &page, Gesture::Hold, Fire::Press, |me, a| me.send_click(a, input)).await;
     }
 
     async fn press_up(&mut self, input: InputId) {
         // Release goes to the page the press started on, even if the press switched pages.
         let Some(press) = self.presses.remove(&input) else { return };
         let page = press.page;
-        for a in self.plugin_actions(&page, input, |t| t.is_none()) {
-            self.send_up(&a, input);
+        if let Some(slot) = self.slot(&page, input) {
+            let raw: Vec<_> = slot.actions.iter().filter(|a| slot.raw_press(a) && self.is_plugin(a)).cloned().collect();
+            for a in raw {
+                self.send_up(&a, input);
+            }
         }
-        if !press.held {
-            self.dispatch(input, &page, Fire::Press, |t| t == Some(Trigger::Tap), |me, a| me.send_click(a, input)).await;
+        if press.held {
+            return self.tap(input, &page, Gesture::Long).await;
         }
+        if !self.slot(&page, input).is_some_and(Slot::wants_double) {
+            return self.tap(input, &page, Gesture::Tap).await;
+        }
+        if self.taps.remove(&input).is_some_and(|(_, p)| p == page) {
+            return self.tap(input, &page, Gesture::Double).await;
+        }
+        self.taps.insert(input, (press.id, page));
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(DOUBLE_TAP).await;
+            let _ = tx.send(Event::TapTimer(input, press.id));
+        });
     }
 
-    fn plugin_actions(&self, page: &str, input: InputId, filter: impl Fn(Option<Trigger>) -> bool) -> Vec<ActionInstance> {
-        self.slot(page, input)
-            .map(|s| s.actions.iter().filter(|a| filter(a.trigger) && self.is_plugin(a)).cloned().collect())
-            .unwrap_or_default()
+    /// Fires a gesture completed on release: a tap, double tap or long press.
+    async fn tap(&mut self, input: InputId, page: &str, gesture: Gesture) {
+        self.dispatch(input, page, gesture, Fire::Press, |me, a| me.send_click(a, input)).await;
     }
 
-    /// Runs built-ins and hands plugin actions to `on_plugin` for every action whose trigger passes `filter`.
-    async fn dispatch(
-        &mut self,
-        input: InputId,
-        page: &str,
-        fire: Fire,
-        filter: impl Fn(Option<Trigger>) -> bool,
-        on_plugin: impl Fn(&Self, &ActionInstance),
-    ) {
+    /// Runs built-ins and hands plugin actions to `on_plugin` for every action `gesture` fires.
+    async fn dispatch(&mut self, input: InputId, page: &str, gesture: Gesture, fire: Fire, on_plugin: impl Fn(&Self, &ActionInstance)) {
         let Some(slot) = self.slot(page, input) else { return };
         let mut effects = Vec::new();
-        for action in &slot.actions {
-            // Presses and turns honour triggers; touch reaches every untriggered action.
-            let pass = match fire {
-                Fire::Press | Fire::Rotate(_) => filter(action.trigger),
-                Fire::Touch | Fire::LongTouch => action.trigger.is_none(),
-            };
-            if !pass {
-                continue;
-            }
+        for action in slot.actions.iter().filter(|a| slot.fires(a, gesture)) {
             if action.uuid == actions::VOLUME {
                 self.volume_fire(action, fire);
             } else if matches!(action.uuid.as_str(), actions::MANGOHUD | actions::MEDIA | actions::CLOCK) {
@@ -622,7 +640,7 @@ impl DeckActor {
             } else if self.is_plugin(action) {
                 on_plugin(self, action);
             } else {
-                tracing::debug!("no handler for {} ({fire:?})", action.uuid);
+                tracing::debug!("no handler for {} ({gesture:?})", action.uuid);
             }
         }
         for e in effects {

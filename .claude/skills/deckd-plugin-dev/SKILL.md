@@ -118,7 +118,7 @@ See `references/protocol.md` for exact payloads, what deckd does with each messa
 
 ## deckd behaviours worth knowing
 
-- **Tap/hold/turn triggers:** users can bind an action to "on tap", "on hold", "turn left/right" in the UI. Such actions receive a synthetic `keyDown`+`keyUp` pair at that moment instead of raw presses — so implement your logic on `keyUp` (or `keyDown`) without assuming timing.
+- **Gesture triggers:** users can bind an action to gestures in the UI (press, tap, double tap, hold, long press, turn right/left, …). For those it gets a synthetic `keyDown`+`keyUp` pair at that moment instead of raw presses — so implement your logic on `keyUp` (or `keyDown`) without assuming timing. "Turn" and "touch" bindings deliver the native `dialRotate` / `touchTap` to dial-capable actions. An action with no triggers gets raw events for whatever the slot's other actions don't use.
 - **Key-only actions on dials:** if your action lacks `"Encoder"` but the user puts it on a dial, pushing or tapping the dial sends `keyDown`/`keyUp` with `controller: "Keypad"`. Declare `"Encoder"` if you want rotation.
 - **Dial drawing:** with a layout (`$X1`, `$A0`, `$A1`, `$B1`, `$B2`, `$C1` or a custom layout JSON path), update items with `setFeedback`. Alternatively, `setImage` with a **wide image (≥1.5:1, e.g. 200×100 SVG)** and deckd draws it across the whole segment — handy for fully custom strip graphics.
 - **Titles** may contain `\n`; deckd draws multiple lines.

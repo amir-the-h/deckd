@@ -265,3 +265,11 @@ details.raw summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .cp-presets { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
 .cp-presets button { aspect-ratio: 1; border: 1px solid #fff3; border-radius: 5px; padding: 0; cursor: pointer; }
 .cp-presets button:hover { outline: 2px solid var(--accent); }
+.stack-item .triggers { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; cursor: default; }
+.stack-item .triggers p { flex-basis: 100%; margin: 2px 0 0; font-size: 11px; }
+.chip {
+  padding: 3px 8px; font-size: 12px; border-radius: 999px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+}
+.chip:hover { color: var(--text); }
+.chip.on { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
