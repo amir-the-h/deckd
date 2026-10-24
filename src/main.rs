@@ -1,5 +1,6 @@
 mod actions;
 mod audio;
+mod autoclick;
 mod config;
 mod device;
 mod focus;

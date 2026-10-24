@@ -39,6 +39,8 @@ enum Event {
     TapTimer(InputId, u64),
     Redraw(String),
     Media(String, Option<crate::widgets::Media>),
+    /// An auto-clicker stopped by itself: its context, and whether it failed.
+    ClickerDone(String, bool),
     Disconnected,
 }
 
@@ -95,6 +97,8 @@ pub struct DeckActor {
     auto_page: Option<String>,
     auto_return: Option<String>,
     regexes: HashMap<String, Option<regex::Regex>>,
+    /// Running auto-clickers by context, with the button they click.
+    clickers: HashMap<String, (tokio::task::JoinHandle<()>, u16)>,
     tx: mpsc::UnboundedSender<Event>,
 }
 
@@ -196,6 +200,7 @@ impl DeckActor {
             auto_page: None,
             auto_return: None,
             regexes: HashMap::new(),
+            clickers: HashMap::new(),
             tx,
         };
         actor.rebuild_index();
@@ -226,6 +231,9 @@ impl DeckActor {
                 actor.on_plugin(msg).await;
             }
             actor.redraw_dirty().await;
+        }
+        for ctx in actor.clickers.keys().cloned().collect::<Vec<_>>() {
+            actor.stop_clicker(&ctx);
         }
         Ok(())
     }
@@ -286,6 +294,16 @@ impl DeckActor {
                     self.media.insert(filter, info);
                     self.mark_uuid(actions::MEDIA);
                 }
+            }
+            Event::ClickerDone(ctx, failed) => {
+                // A newer clicker may already run for this context; leave that one alone.
+                if self.clickers.get(&ctx).is_some_and(|(h, _)| h.is_finished()) {
+                    self.clickers.remove(&ctx);
+                }
+                if failed {
+                    self.flash(ctx.clone(), Flash::Alert);
+                }
+                self.mark_ctx(&ctx);
             }
             Event::Disconnected => {}
         }
@@ -497,6 +515,24 @@ impl DeckActor {
                 }
                 draw(&st)
             }
+            actions::AUTOCLICK => {
+                let running = self.clicker_running(&a.context);
+                let mut st = State {
+                    image: user.image.clone().or_else(|| Some(icon_uri(crate::autoclick::ICON))),
+                    background: if running { Some(color("on_color", "#1e6b34")) } else { user.background.clone() },
+                    labels: user.labels.clone(),
+                    ..Default::default()
+                };
+                if st.labels.values().all(|l| l.text.is_empty()) {
+                    let text = if running { "Clicking" } else { "Auto-click" };
+                    st.labels.insert(LabelPos::Bottom, styled(LabelPos::Bottom, text.into(), 12.0, "#ffffff"));
+                }
+                let flash = self.live.get(&a.context).and_then(|l| l.flash.map(|(f, _)| f));
+                match input {
+                    InputId::Key(_) => Some(self.renderer.render_key(key_size, Some(&st), flash)),
+                    InputId::Dial(_) => (seg_w > 0).then(|| self.renderer.render_dial(seg_w, seg_h, Some(&st))),
+                }
+            }
             _ => None,
         }
     }
@@ -633,6 +669,10 @@ impl DeckActor {
                 self.widget_fire(action, fire);
             } else if action.uuid == actions::MEDIA_KEY {
                 self.media_key_fire(action, fire);
+            } else if action.uuid == actions::AUTOCLICK {
+                if matches!(fire, Fire::Press | Fire::Touch) {
+                    effects.push(Effect::ToggleAutoClick(action.context.clone()));
+                }
             } else if actions::is_builtin(&action.uuid) {
                 if let Some(e) = actions::run(&action.uuid, &action.settings, fire) {
                     effects.push(e);
@@ -786,14 +826,7 @@ impl DeckActor {
                 }
             }
             "showAlert" | "showOk" => {
-                let flash = if event == "showOk" { Flash::Ok } else { Flash::Alert };
-                self.live.entry(ctx.clone()).or_default().flash = Some((flash, Instant::now()));
-                self.mark_ctx(&ctx);
-                let tx = self.tx.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(FLASH_TIME).await;
-                    let _ = tx.send(Event::Redraw(ctx));
-                });
+                self.flash(ctx, if event == "showOk" { Flash::Ok } else { Flash::Alert });
             }
             "setSettings" => {
                 let serial = self.serial.clone();
@@ -1097,7 +1130,49 @@ impl DeckActor {
                 self.brightness = (self.brightness as i32 + delta).clamp(0, 100) as u8;
                 let _ = self.deck.set_brightness(self.brightness).await;
             }
+            Effect::ToggleAutoClick(ctx) => {
+                if self.clicker_running(&ctx) {
+                    self.stop_clicker(&ctx);
+                } else if let Some(settings) = self.instance_mut(&ctx).map(|(_, a)| a.settings.clone()) {
+                    let clicker = crate::autoclick::Clicker::from_settings(&settings);
+                    let code = clicker.code;
+                    let tx = self.tx.clone();
+                    let c = ctx.clone();
+                    let task = tokio::spawn(async move {
+                        let result = clicker.run().await;
+                        if let Err(e) = &result {
+                            tracing::warn!("auto-click: {e:#}");
+                        }
+                        let _ = tx.send(Event::ClickerDone(c, result.is_err()));
+                    });
+                    self.clickers.insert(ctx.clone(), (task, code));
+                }
+                self.mark_ctx(&ctx);
+            }
         }
+    }
+
+    fn clicker_running(&self, ctx: &str) -> bool {
+        self.clickers.get(ctx).is_some_and(|(h, _)| !h.is_finished())
+    }
+
+    fn stop_clicker(&mut self, ctx: &str) {
+        if let Some((task, code)) = self.clickers.remove(ctx) {
+            task.abort();
+            // Aborting can land between press and release.
+            tokio::task::spawn_blocking(move || crate::autoclick::release(code));
+        }
+    }
+
+    /// Briefly shows a tick or warning sign over an action.
+    fn flash(&mut self, ctx: String, flash: Flash) {
+        self.live.entry(ctx.clone()).or_default().flash = Some((flash, Instant::now()));
+        self.mark_ctx(&ctx);
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(FLASH_TIME).await;
+            let _ = tx.send(Event::Redraw(ctx));
+        });
     }
 
     /// Switches page, recording `record` as the back-history entry (None leaves history alone).
@@ -1359,7 +1434,7 @@ impl DeckActor {
     /// Renders one slot of any page as it would appear on the device.
     fn render(&self, page: &str, input: InputId) -> Option<DynamicImage> {
         let action = self.slot(page, input).and_then(Slot::display_action);
-        if let Some(a) = action.filter(|a| matches!(a.uuid.as_str(), actions::CLOCK | actions::MANGOHUD | actions::MEDIA)) {
+        if let Some(a) = action.filter(|a| matches!(a.uuid.as_str(), actions::CLOCK | actions::MANGOHUD | actions::MEDIA | actions::AUTOCLICK)) {
             return self.render_widget(a, input);
         }
         if let Some(a) = action.filter(|a| a.uuid == actions::VOLUME) {
@@ -1488,4 +1563,9 @@ pub fn parse_input(s: &str) -> Option<InputId> {
         "dial" => Some(InputId::Dial(n)),
         _ => None,
     }
+}
+
+/// A white 24×24 path as a key icon.
+fn icon_uri(path: &str) -> String {
+    format!(r##"data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6 -6 36 36"><path fill="#fff" d="{path}"/></svg>"##)
 }

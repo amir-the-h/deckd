@@ -829,6 +829,13 @@ function renderSettings(box, keepPI) {
       ? [["label_color", "Label", "#9a9a9a"], ["value_color", "Value", "#ffffff"]]
       : [["value_color", "“HUD”", "#ffffff"], ["label_color", "“MangoHud”", "#8a8a8a"]]));
     box.append(el("p", { class: "muted" }, "Needs MangoHud's control socket and logging enabled in MangoHud.conf (control=…/scmango-%p, output_folder=/tmp/sc_mangohud, autostart_log=1)."));
+  } else if (a.uuid === "deckd.autoclick") {
+    box.append(field("Button", settingSelect(a, "button", [["left", "Left"], ["right", "Right"], ["middle", "Middle"]])));
+    box.append(el("div", { class: "row" },
+      field("Every (ms)", settingInput(a, "interval", { type: "number", min: 10, placeholder: "100" })),
+      field("Clicks", settingInput(a, "count", { type: "number", min: 0, placeholder: "until stopped" }))));
+    box.append(colorRow(a, [["on_color", "While clicking", "#1e6b34"]]));
+    box.append(el("p", { class: "muted" }, "Press to start clicking wherever the pointer is; press again to stop. Changes apply the next time it starts. Needs write access to /dev/uinput (see deckd's udev rules)."));
   } else if (meta.inspector) {
     const holder = el("div");
     box.append(holder);

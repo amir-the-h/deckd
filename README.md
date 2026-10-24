@@ -19,7 +19,7 @@ app.
   and `.streamDeckIconPack`s), and plugin install/removal.
 - **Built-in actions** that need no plugin process: switch page, run command,
   dial commands, brightness, audio volume (PulseAudio/PipeWire), clock,
-  now-playing and media keys (MPRIS) and MangoHud stats.
+  now-playing and media keys (MPRIS), MangoHud stats and an auto-clicker.
 - **Several actions per key or dial**, each bound to any mix of press, tap,
   double tap, hold, long press, turn (either way, left or right), touch and
   long touch. An action with nothing picked gets whatever the others don't use.
@@ -52,7 +52,7 @@ binaries for x86_64 and aarch64 (glibc 2.35 or newer); each tarball holds
 cargo build --release
 install -Dm755 target/release/deckd ~/.local/bin/deckd
 
-# Let your user open the deck without root
+# Let your user open the deck (and /dev/uinput, for auto-click) without root
 sudo install -m644 dist/70-deckd.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
 

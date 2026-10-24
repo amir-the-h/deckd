@@ -187,6 +187,8 @@ fn builtins() -> Vec<Value> {
                 "icon": icon("M21 6H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h18a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1zM10 13H8v2H6v-2H4v-2h2V9h2v2h2v2zm4.5 2a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-3a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z") }),
         json!({ "uuid": "deckd.brightness", "name": "Brightness", "tooltip": "Change the deck's brightness", "keypad": true, "encoder": true,
                 "icon": icon("M20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12 20 8.69zM12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12z") }),
+        json!({ "uuid": "deckd.autoclick", "name": "Auto-click", "tooltip": "Click the mouse repeatedly until pressed again", "keypad": true, "encoder": true,
+                "icon": icon(crate::autoclick::ICON) }),
     ]
 }
 

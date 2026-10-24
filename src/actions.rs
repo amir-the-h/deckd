@@ -14,6 +14,8 @@ pub const MANGOHUD: &str = "deckd.mangohud";
 pub const MEDIA: &str = "deckd.media";
 /// Play/pause, skip, stop or seek on an MPRIS player; handled by the device actor.
 pub const MEDIA_KEY: &str = "deckd.mediakey";
+/// Clicks the mouse until pressed again; handled by the device actor.
+pub const AUTOCLICK: &str = "deckd.autoclick";
 
 pub fn is_builtin(uuid: &str) -> bool {
     uuid.starts_with("deckd.")
@@ -25,6 +27,8 @@ pub enum Effect {
     SwitchPage(String),
     Back,
     Brightness { delta: i32 },
+    /// Starts or stops the auto-clicker with this context.
+    ToggleAutoClick(String),
 }
 
 /// What happened to the input the action is bound to.
