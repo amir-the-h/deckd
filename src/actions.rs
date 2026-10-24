@@ -72,10 +72,19 @@ pub fn spawn_shell(cmd: &str) {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     tracing::info!("exec: {cmd}");
+    // Under systemd, stopping or restarting deckd kills everything in its cgroup, setsid or
+    // not. Give the command its own scope, like an app started from the desktop.
+    let mut command = if std::env::var_os("INVOCATION_ID").is_some() {
+        let mut c = Command::new("systemd-run");
+        c.args(["--user", "--scope", "--slice=app.slice", "--collect", "--quiet", "--", "sh", "-c", cmd]);
+        c
+    } else {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(cmd);
+        c
+    };
     let result = unsafe {
-        Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
