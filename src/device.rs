@@ -1226,13 +1226,13 @@ impl DeckActor {
         let rules: Vec<(String, config::AutoSwitch)> =
             self.cfg.pages.iter().filter_map(|(n, p)| Some((n.clone(), p.auto.clone()?))).filter(|(_, a)| a.enabled).collect();
         for (name, rule) in rules {
-            if rule.class.is_empty() && rule.title.is_empty() && !rule.steam_game {
+            if rule.class.is_empty() && rule.title.is_empty() && !rule.game {
                 continue;
             }
-            let steam_ok = !rule.steam_game || f.steam_app.is_some();
+            let game_ok = !rule.game || f.game;
             let class_ok = rule.class.is_empty() || self.pattern_matches(&rule.class, &f.class);
             let title_ok = rule.title.is_empty() || self.pattern_matches(&rule.title, &f.title);
-            if steam_ok && class_ok && title_ok {
+            if game_ok && class_ok && title_ok {
                 return Some(name);
             }
         }
@@ -1248,6 +1248,7 @@ impl DeckActor {
                 }
                 match f.steam_app {
                     Some(app) => tracing::info!("[{}] focus {:?} (steam app {app}) -> page {page}", self.serial, f.class),
+                    None if f.game => tracing::info!("[{}] focus {:?} (game) -> page {page}", self.serial, f.class),
                     None => tracing::info!("[{}] focus {:?} -> page {page}", self.serial, f.class),
                 }
                 self.auto_page = Some(page.clone());

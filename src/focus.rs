@@ -13,6 +13,8 @@ pub struct Focus {
     pub title: String,
     /// Steam app id when the window belongs to a game Steam launched.
     pub steam_app: Option<u32>,
+    /// The window belongs to a game started by a launcher (Steam, or anything running it through Proton).
+    pub game: bool,
 }
 
 pub type FocusWatch = watch::Receiver<Focus>;
@@ -62,10 +64,11 @@ async fn follow(tx: &watch::Sender<Focus>) -> anyhow::Result<()> {
         // activewindow>>CLASS,TITLE — the title may itself contain commas.
         if let Some(rest) = line.strip_prefix("activewindow>>") {
             let (class, title) = rest.split_once(',').unwrap_or((rest, ""));
-            let mut f = Focus { class: class.to_string(), title: title.to_string(), steam_app: None };
+            let mut f = Focus { class: class.to_string(), title: title.to_string(), steam_app: None, game: false };
             // The event has no pid; ask for it, and trust the answer only if it's still the same window.
             if let Some(now) = query().await.filter(|q| q.class == f.class) {
                 f.steam_app = now.steam_app;
+                f.game = now.game;
             }
             tx.send_if_modified(|cur| replace(cur, f));
         }
@@ -77,21 +80,30 @@ async fn follow(tx: &watch::Sender<Focus>) -> anyhow::Result<()> {
 async fn query() -> Option<Focus> {
     let out = tokio::process::Command::new("hyprctl").args(["activewindow", "-j"]).output().await.ok()?;
     let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let env = v.get("pid").and_then(Value::as_i64).and_then(|pid| std::fs::read(format!("/proc/{pid}/environ")).ok());
+    let env: Vec<&[u8]> = env.as_deref().map(|e| e.split(|&b| b == 0).collect()).unwrap_or_default();
+    let steam_app = steam_app_of(&env);
     Some(Focus {
         class: v.get("class").and_then(Value::as_str).unwrap_or_default().to_string(),
         title: v.get("title").and_then(Value::as_str).unwrap_or_default().to_string(),
-        steam_app: v.get("pid").and_then(Value::as_i64).and_then(steam_app_of),
+        steam_app,
+        game: steam_app.is_some() || launched_game(&env),
     })
 }
 
 /// Steam passes `SteamAppId` to every game it starts, and Proton keeps it, so the game's
 /// own process carries it even when the window class is just the executable's name.
-fn steam_app_of(pid: i64) -> Option<u32> {
-    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    env.split(|&b| b == 0).find_map(|kv| {
+fn steam_app_of(env: &[&[u8]]) -> Option<u32> {
+    env.iter().find_map(|kv| {
         let id = kv.strip_prefix(b"SteamAppId=").or_else(|| kv.strip_prefix(b"SteamGameId="))?;
         std::str::from_utf8(id).ok()?.parse().ok().filter(|&n| n != 0)
     })
+}
+
+/// Other launchers (Epic, Heroic, Lutris, umu) don't set a Steam app id, but Proton needs
+/// `STEAM_COMPAT_DATA_PATH` whoever runs it, and Heroic tags its native games too.
+fn launched_game(env: &[&[u8]]) -> bool {
+    env.iter().any(|kv| kv.starts_with(b"STEAM_COMPAT_DATA_PATH=") || kv.starts_with(b"HEROIC_APP_NAME="))
 }
 
 /// Open windows (class, title), for picking a rule in the UI.
