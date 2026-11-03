@@ -85,29 +85,76 @@ pub fn mango_format(field: &str, v: f64) -> String {
 }
 
 /// Toggles the HUD in every running MangoHud instance. Returns how many were reached.
+///
+/// Each game's control socket is tried first. vkd3d-proton (DX12) games often create the
+/// socket from a Vulkan instance that never renders, so MangoHud never accepts on it; when
+/// games are running but none answers, the `toggle_hud` key is pressed instead, which the
+/// focused game picks up.
 pub fn mango_toggle_hud() -> usize {
-    use std::io::Write;
-    use std::os::linux::net::SocketAddrExt;
-    use std::os::unix::net::{SocketAddr, UnixStream};
+    let sockets = mango_sockets();
+    let reached = sockets.iter().filter(|name| mango_send(name, b":hud;")).count();
+    if reached > 0 || sockets.is_empty() {
+        return reached;
+    }
+    let keys = mango_toggle_keys();
+    let Some(codes) = keys.iter().map(|k| crate::uinput::key_code(k)).collect::<Option<Vec<_>>>() else {
+        tracing::warn!("mangohud: can't press toggle_hud={}: unknown key", keys.join("+"));
+        return 0;
+    };
+    // MangoHud checks keys every 100 ms and ignores repeats within 400 ms, so this
+    // registers exactly once.
+    match crate::uinput::chord(&codes, Duration::from_millis(250)) {
+        Ok(()) => {
+            tracing::info!("mangohud: control socket not answering, pressed {}", keys.join("+"));
+            1
+        }
+        Err(e) => {
+            tracing::warn!("mangohud: can't press toggle_hud: {e:#}");
+            0
+        }
+    }
+}
 
+/// Names of the running MangoHud control sockets (abstract, so listed with a leading '@').
+fn mango_sockets() -> Vec<String> {
     let uid = unsafe { getuid() };
     let prefix = format!("@/run/user/{uid}/scmango-");
-    let sockets: Vec<String> = std::fs::read_to_string("/proc/net/unix")
+    let sockets: std::collections::BTreeSet<String> = std::fs::read_to_string("/proc/net/unix")
         .unwrap_or_default()
         .lines()
         .filter_map(|l| l.split_whitespace().last().filter(|p| p.starts_with(&prefix)).map(String::from))
         .collect();
-    let mut reached = 0;
-    for name in sockets.iter().collect::<std::collections::BTreeSet<_>>() {
-        let Ok(addr) = SocketAddr::from_abstract_name(&name.as_bytes()[1..]) else { continue };
-        if let Ok(mut s) = UnixStream::connect_addr(&addr) {
-            let _ = s.set_write_timeout(Some(Duration::from_millis(500)));
-            if s.write_all(b":hud;").is_ok() {
-                reached += 1;
-            }
-        }
-    }
-    reached
+    sockets.into_iter().collect()
+}
+
+/// Sends `cmd` once MangoHud has accepted the connection. A queued connection is not
+/// enough: MangoHud greets each client it accepts, and one that never does won't read.
+fn mango_send(name: &str, cmd: &[u8]) -> bool {
+    use std::io::Write;
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixStream};
+
+    let Ok(addr) = SocketAddr::from_abstract_name(&name.as_bytes()[1..]) else { return false };
+    let Ok(mut s) = UnixStream::connect_addr(&addr) else { return false };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = s.set_write_timeout(Some(Duration::from_millis(500)));
+    let mut greeting = [0u8; 64];
+    matches!(s.read(&mut greeting), Ok(n) if n > 0) && s.write_all(cmd).is_ok()
+}
+
+/// The `toggle_hud` keys from the global MangoHud.conf (last one wins), or MangoHud's default.
+fn mango_toggle_keys() -> Vec<String> {
+    let conf = dirs::config_dir().map(|d| d.join("MangoHud/MangoHud.conf"));
+    let value = conf
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| {
+            text.lines()
+                .filter_map(|l| l.split('#').next()?.trim().strip_prefix("toggle_hud")?.trim_start().strip_prefix('=').map(|v| v.trim().to_string()))
+                .filter(|v| !v.is_empty())
+                .last()
+        })
+        .unwrap_or_else(|| "Shift_R+F12".into());
+    value.split('+').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect()
 }
 
 unsafe extern "C" {

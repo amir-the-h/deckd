@@ -14,6 +14,7 @@ mod plugins;
 mod render;
 mod server;
 mod store;
+mod uinput;
 mod usbreset;
 mod widgets;
 

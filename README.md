@@ -52,7 +52,7 @@ binaries for x86_64 and aarch64 (glibc 2.35 or newer); each tarball holds
 cargo build --release
 install -Dm755 target/release/deckd ~/.local/bin/deckd
 
-# Let your user open the deck (and /dev/uinput, for auto-click) without root
+# Let your user open the deck (and /dev/uinput, for auto-click and the MangoHud key fallback) without root
 sudo install -m644 dist/70-deckd.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
 
