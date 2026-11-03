@@ -314,6 +314,36 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
+/// Like [`write_json`], but the file is readable only by the user, for data that may hold
+/// passwords, tokens or private addresses.
+pub fn write_private_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let _ = std::fs::remove_file(&tmp); // a leftover may have looser permissions
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+    file.write_all(serde_json::to_string_pretty(value)?.as_bytes())?;
+    drop(file);
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Makes a folder and the files directly in it private to the user (0700 / 0600).
+pub fn make_private(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        if entry.file_type().is_ok_and(|t| t.is_file()) {
+            std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
+}
+
 pub struct DeviceConfig {
     pub dir: PathBuf,
     pub profile: Profile,
@@ -368,6 +398,28 @@ mod tests {
 
     fn slot(json: &str) -> Slot {
         serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn private_files_stay_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = std::env::temp_dir().join(format!("deckd-private-{}", std::process::id()));
+        let file = dir.join("p.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "{}").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Rewriting a readable file leaves it private.
+        write_private_json(&file, &serde_json::json!({"password": "x"})).unwrap();
+        assert_eq!(mode(&file), 0o600);
+
+        // Files written some other way are tightened, along with the folder.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        make_private(&dir).unwrap();
+        assert_eq!((mode(&dir), mode(&file)), (0o700, 0o600));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

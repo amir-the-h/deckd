@@ -172,12 +172,17 @@ fn unmounted_automount(path: &Path, mounts: &[(PathBuf, bool)]) -> Option<PathBu
     autofs.then(|| point.clone())
 }
 
+/// Plugin-wide settings, one `<plugin>.json` each. They often hold passwords and tokens, so the
+/// folder and its files are kept private to the user.
 fn data_dir() -> PathBuf {
     config::config_dir().join("plugin-data")
 }
 
 impl Host {
     pub fn load(port: u16) -> Arc<Host> {
+        if let Err(e) = config::make_private(&data_dir()) {
+            tracing::warn!("can't restrict permissions on {}: {e:#}", data_dir().display());
+        }
         let mut catalog = Catalog::default();
         let mut dirs = Vec::new();
         let mut links = Vec::new();
@@ -569,7 +574,7 @@ impl Host {
         match event {
             "setGlobalSettings" => {
                 let payload = v.get("payload").cloned().unwrap_or(json!({}));
-                let _ = config::write_json(&data_dir().join(format!("{plugin}.json")), &payload);
+                let _ = config::write_private_json(&data_dir().join(format!("{plugin}.json")), &payload);
                 let inner = self.inner.lock().unwrap();
                 let msg = json!({ "event": "didReceiveGlobalSettings", "payload": { "settings": payload } }).to_string();
                 for (ctx, conn) in &inner.inspectors {
@@ -627,7 +632,7 @@ impl Host {
                 let Some(plugin) = plugin else { return };
                 if event == "setGlobalSettings" {
                     let payload = v.get("payload").cloned().unwrap_or(json!({}));
-                    let _ = config::write_json(&data_dir().join(format!("{plugin}.json")), &payload);
+                    let _ = config::write_private_json(&data_dir().join(format!("{plugin}.json")), &payload);
                     if let Some(conn) = self.inner.lock().unwrap().conns.get(&plugin) {
                         let msg = json!({ "event": "didReceiveGlobalSettings", "payload": { "settings": payload } });
                         let _ = conn.send(msg.to_string());
