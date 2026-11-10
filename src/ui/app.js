@@ -99,6 +99,17 @@ function setSlot(input, slot) {
   if (!slot || !slot.actions?.length) delete page[sect][n];
   else page[sect][n] = slot;
 }
+// The dial whose slot shows on segment d, and how many segments it fills: a dial slot's span
+// covers the dials to its right (see Page::dial_owner in config.rs).
+function dialOwner(d) {
+  const dials = pageObj()?.dials || {}, n = S.dev?.dials || 0;
+  for (let i = 0; i < n; ) {
+    const len = Math.min(Math.max(1, dials[i]?.span || 1), n - i);
+    if (d < i + len) return [i, len];
+    i += len;
+  }
+  return [d, 1];
+}
 function curAction() {
   return getSlot(S.sel)?.actions?.[S.selAction];
 }
@@ -436,7 +447,14 @@ function renderDeck() {
       const strip = el("div", { class: "strip" });
       strip.style.gridTemplateColumns = `repeat(${S.dev.dials}, 1fr)`;
       strip.style.width = `${width}px`;
-      for (let d = 0; d < S.dev.dials; d++) strip.append(makeSlot(`dial-${d}`, "segment"));
+      for (let d = 0; d < S.dev.dials; d++) {
+        const [owner, span] = dialOwner(d);
+        if (owner !== d) continue;
+        const node = makeSlot(`dial-${d}`, "segment");
+        node.style.gridColumn = `span ${span}`;
+        node.style.aspectRatio = `${2 * span} / 1`;
+        strip.append(node);
+      }
       deck.append(strip);
     }
     const knobs = el("div", { class: "knobs" });
@@ -444,7 +462,8 @@ function renderDeck() {
     knobs.style.width = `${width}px`;
     const knobPx = Math.round((width / S.dev.dials) * 0.5);
     for (let d = 0; d < S.dev.dials; d++) {
-      const knob = el("div", { class: `knob${S.sel === `dial-${d}` ? " selected" : ""}`, title: `Dial ${d + 1}`, onclick: () => select(`dial-${d}`) });
+      const owner = dialOwner(d)[0];
+      const knob = el("div", { class: `knob${S.sel === `dial-${owner}` ? " selected" : ""}`, title: `Dial ${d + 1}`, onclick: () => select(`dial-${owner}`) });
       knob.style.width = knob.style.height = `${knobPx}px`;
       knobs.append(knob);
     }
@@ -453,6 +472,8 @@ function renderDeck() {
 }
 
 function select(input) {
+  // A dial under a wider slot belongs to that slot.
+  if (input.startsWith("dial")) input = `dial-${dialOwner(+input.split("-")[1])[0]}`;
   if (S.sel !== input) {
     S.selAction = Math.max(0, getSlot(input)?.display ?? 0);
     unmountPI();
@@ -460,7 +481,10 @@ function select(input) {
   S.sel = input;
   document.querySelectorAll(".slot, .knob").forEach((n) => n.classList.remove("selected"));
   document.querySelector(`.slot[data-input="${input}"]`)?.classList.add("selected");
-  if (input.startsWith("dial")) document.querySelectorAll(".knob")[+input.split("-")[1]]?.classList.add("selected");
+  if (input.startsWith("dial")) {
+    const knobs = document.querySelectorAll(".knob");
+    knobs.forEach((k, d) => { if (`dial-${dialOwner(d)[0]}` === input) k.classList.add("selected"); });
+  }
   showTab("inspector");
   renderInspector();
 }
@@ -508,9 +532,16 @@ async function moveSlot(from, to) {
     const p = canPlace(from, act.uuid);
     if (p) return toast(p, true);
   }
+  // Only dial slots can be wider than one segment.
+  if (a && to.startsWith("key")) delete a.span;
+  if (b && from.startsWith("key")) delete b.span;
   setSlot(to, a);
   setSlot(from, b);
   await savePage();
+  if (from.startsWith("dial") || to.startsWith("dial")) {
+    renderDeck();
+    refreshAllSlots();
+  }
   refreshSlot(from);
   refreshSlot(to);
   select(to);
@@ -605,6 +636,7 @@ function renderInspector() {
 
   root.append(el("div", { id: "stack-section", class: "section" }));
   renderStack();
+  if (S.sel.startsWith("dial") && S.dev.dials > 1) root.append(renderWidth(slot));
 
   const settings = el("div", { class: "section" }, el("div", { class: "section-head" }, el("h2", {}, "Settings")));
   renderSettings(settings, keepPI);
@@ -942,6 +974,37 @@ function displayState(slot) {
   const idx = a.state || 0;
   while (a.states.length <= idx) a.states.push({});
   return a.states[idx];
+}
+
+// How many touch-strip segments a dial slot fills. The dials it covers turn, push and tap for it.
+function renderWidth(slot) {
+  const d = +S.sel.split("-")[1];
+  const max = S.dev.dials - d;
+  const box = el("div", { class: "section" }, el("div", { class: "section-head" }, el("h2", {}, "Width")));
+  if (max < 2) {
+    box.append(el("p", { class: "muted" }, "The last dial's slot can't be wider; widen a slot to its left instead."));
+    return box;
+  }
+  const sel = el("select", {}, Array.from({ length: max }, (_, i) => el("option", { value: i + 1 }, i ? `${i + 1} segments (dials ${d + 1}–${d + i + 1})` : "1 segment")));
+  sel.value = String(Math.min(max, Math.max(1, slot.span || 1)));
+  sel.addEventListener("change", async () => {
+    const cur = getSlot(S.sel);
+    if (!cur) return;
+    const span = +sel.value;
+    if (span > 1) cur.span = span; else delete cur.span;
+    await savePage();
+    renderDeck();
+    refreshAllSlots();
+    renderInspector();
+  });
+  box.append(field("Fills", sel));
+  const span = Math.min(max, Math.max(1, slot.span || 1));
+  const hidden = [];
+  for (let i = d + 1; i < d + span; i++) if (getSlot(`dial-${i}`)) hidden.push(i + 1);
+  box.append(el("p", { class: "muted" }, span > 1
+    ? `Dials ${d + 2}${span > 2 ? `–${d + span}` : ""} turn, push and tap for this slot.${hidden.length ? ` What's on dial ${hidden.join(", ")} is kept but hidden until you narrow this one.` : ""}`
+    : "Widen it to give the action more room on the touch strip; it covers the dials to its right."));
+  return box;
 }
 
 function renderAppearance(slot) {

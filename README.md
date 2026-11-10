@@ -23,6 +23,9 @@ app.
 - **Several actions per key or dial**, each bound to any mix of press, tap,
   double tap, hold, long press, turn (either way, left or right), touch and
   long touch. An action with nothing picked gets whatever the others don't use.
+- **Wide dial slots**: a dial's slot can fill two to four touch-strip
+  segments, with the dials it covers working for it. Plugins are told the width
+  (`span`) so they can draw that wide.
 - **Automatic page switching** by focused window (class, title or "any Steam
   game") on Hyprland.
 - **StreamController import**: `deckd import-streamcontroller` converts your

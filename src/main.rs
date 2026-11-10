@@ -149,8 +149,12 @@ fn preview(serial: &str, page: &str, out: &str) -> Result<()> {
         imageops::overlay(&mut canvas, &img, x, y);
     }
     for d in 0..4u8 {
+        let (owner, span) = page.dial_owner(d, 4);
+        if owner != d {
+            continue;
+        }
         let state = page.dials.get(&d).and_then(config::Slot::display_action).and_then(|a| a.current_state());
-        let img = r.render_dial(200, 100, state);
+        let img = r.render_dial(200 * span as u32, 100, state);
         imageops::overlay(&mut canvas, &img, d as i64 * 200 + 10, 290);
     }
     canvas.save(out)?;

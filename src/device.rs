@@ -258,6 +258,23 @@ impl DeckActor {
         }
     }
 
+    /// The dial whose slot shows on segment `d` of `page`, and how many segments it covers.
+    fn dial_owner(&self, page: &str, d: u8) -> (u8, u8) {
+        self.cfg.pages.get(page).map_or((d, 1), |p| p.dial_owner(d, self.kind.encoder_count()))
+    }
+
+    /// Size of one touch-strip segment.
+    fn segment_size(&self) -> Option<(u32, u32)> {
+        let (w, h) = self.kind.lcd_strip_size()?;
+        Some(((w / self.kind.encoder_count().max(1) as usize) as u32, h as u32))
+    }
+
+    /// Size of what a slot draws: a key, or its dial's segments.
+    fn dial_size(&self, page: &str, d: u8) -> Option<(u32, u32)> {
+        let (w, h) = self.segment_size()?;
+        Some((w * self.dial_owner(page, d).1 as u32, h))
+    }
+
     fn instance_mut(&mut self, ctx: &str) -> Option<(&Loc, &mut ActionInstance)> {
         let loc = self.index.get(ctx)?;
         let page = self.cfg.pages.get_mut(&loc.page)?;
@@ -403,13 +420,13 @@ impl DeckActor {
     }
 
     /// The picture for a live built-in.
-    fn render_widget(&self, a: &ActionInstance, input: InputId) -> Option<DynamicImage> {
+    fn render_widget(&self, page: &str, a: &ActionInstance, input: InputId) -> Option<DynamicImage> {
         let s = |k: &str| a.settings.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
         let user = a.current_state().cloned().unwrap_or_default();
         let key_size = self.kind.key_image_format().size.0 as u32;
-        let (seg_w, seg_h) = match self.kind.lcd_strip_size() {
-            Some((w, h)) => ((w / self.kind.encoder_count().max(1) as usize) as u32, h as u32),
-            None => (0, 0),
+        let (seg_w, seg_h) = match input {
+            InputId::Dial(d) => self.dial_size(page, d).unwrap_or((0, 0)),
+            InputId::Key(_) => (0, 0),
         };
         let draw = |st: &State| match input {
             InputId::Key(_) => Some(self.renderer.render_key(key_size, Some(st), None)),
@@ -551,10 +568,11 @@ impl DeckActor {
         match u {
             DeviceStateUpdate::ButtonDown(k) => self.press_down(InputId::Key(k)).await,
             DeviceStateUpdate::ButtonUp(k) => self.press_up(InputId::Key(k)).await,
-            DeviceStateUpdate::EncoderDown(d) => self.press_down(InputId::Dial(d)).await,
-            DeviceStateUpdate::EncoderUp(d) => self.press_up(InputId::Dial(d)).await,
+            // A dial under a wider slot acts as that slot's dial.
+            DeviceStateUpdate::EncoderDown(d) => self.press_down(InputId::Dial(self.dial_owner(&page, d).0)).await,
+            DeviceStateUpdate::EncoderUp(d) => self.press_up(InputId::Dial(self.dial_owner(&page, d).0)).await,
             DeviceStateUpdate::EncoderTwist(d, ticks) => {
-                let input = InputId::Dial(d);
+                let input = InputId::Dial(self.dial_owner(&page, d).0);
                 let pressed = self.presses.contains_key(&input);
                 let cw = ticks > 0;
                 self.dispatch(input, &page, Gesture::Turn(cw), Fire::Rotate(ticks), |me, a| {
@@ -570,7 +588,10 @@ impl DeckActor {
             }
             DeviceStateUpdate::TouchScreenPress(x, y) | DeviceStateUpdate::TouchScreenLongPress(x, y) => {
                 let long = matches!(u, DeviceStateUpdate::TouchScreenLongPress(..));
-                let (d, local_x) = self.segment_at(x);
+                let (seg, local_x) = self.segment_at(x);
+                let d = self.dial_owner(&page, seg).0;
+                let seg_w = self.segment_size().map_or(200, |(w, _)| w) as u16;
+                let local_x = local_x + (seg - d) as u16 * seg_w;
                 let input = InputId::Dial(d);
                 let (gesture, fire) = if long { (Gesture::LongTouch, Fire::LongTouch) } else { (Gesture::Touch, Fire::Touch) };
                 self.dispatch(input, &page, gesture, fire, |me, a| {
@@ -708,6 +729,11 @@ impl DeckActor {
             "state": a.state,
             "isInMultiAction": false,
         });
+        // Not in Elgato's protocol: how many segments a dial slot fills, so a plugin can draw that wide.
+        if let InputId::Dial(d) = input {
+            let page = self.index.get(&a.context).map_or(self.current.as_str(), |l| l.page.as_str());
+            payload["span"] = json!(self.dial_owner(page, d).1);
+        }
         if let (Some(p), Value::Object(extra)) = (payload.as_object_mut(), extra) {
             p.extend(extra);
         }
@@ -756,6 +782,9 @@ impl DeckActor {
         let Some(p) = self.cfg.pages.get(page) else { return };
         let slots = p.keys.iter().map(|(k, s)| (InputId::Key(*k), s)).chain(p.dials.iter().map(|(d, s)| (InputId::Dial(*d), s)));
         for (input, slot) in slots {
+            if self.covered(page, input) {
+                continue;
+            }
             for a in &slot.actions {
                 let Some(info) = self.host.action(&a.uuid) else { continue };
                 if only_plugin.is_some_and(|p| p != info.plugin) {
@@ -767,6 +796,11 @@ impl DeckActor {
                 self.send_plugin(event, a, input, json!({}));
             }
         }
+    }
+
+    /// Whether the slot is hidden under a wider dial slot to its left.
+    fn covered(&self, page: &str, input: InputId) -> bool {
+        matches!(input, InputId::Dial(d) if self.dial_owner(page, d).0 != d)
     }
 
     async fn on_plugin(&mut self, msg: ToDeck) {
@@ -968,13 +1002,17 @@ impl DeckActor {
         }
     }
 
-    /// Every action instance on a page, by context.
-    fn instances(page: &config::Page) -> HashMap<String, (InputId, ActionInstance)> {
+    /// Every action instance on a page, by context, with how many segments its slot shows on
+    /// (0 for a dial slot covered by a wider one, 1 for keys).
+    fn instances(page: &config::Page, dials: u8) -> HashMap<String, (InputId, ActionInstance, u8)> {
         page.keys
             .iter()
-            .map(|(k, s)| (InputId::Key(*k), s))
-            .chain(page.dials.iter().map(|(d, s)| (InputId::Dial(*d), s)))
-            .flat_map(|(input, slot)| slot.actions.iter().map(move |a| (a.context.clone(), (input, a.clone()))))
+            .map(|(k, s)| (InputId::Key(*k), s, 1))
+            .chain(page.dials.iter().map(|(d, s)| {
+                let (owner, span) = page.dial_owner(*d, dials);
+                (InputId::Dial(*d), s, if owner == *d { span } else { 0 })
+            }))
+            .flat_map(|(input, slot, span)| slot.actions.iter().map(move |a| (a.context.clone(), (input, a.clone(), span))))
             .collect()
     }
 
@@ -984,14 +1022,16 @@ impl DeckActor {
         }
         config::assign_contexts(&mut page);
         let visible = name == self.current;
-        let old = self.cfg.pages.get(&name).map(Self::instances).unwrap_or_default();
-        let new = Self::instances(&page);
+        let dials = self.kind.encoder_count();
+        let old = self.cfg.pages.get(&name).map(|p| Self::instances(p, dials)).unwrap_or_default();
+        let new = Self::instances(&page, dials);
 
-        // Tell plugins about what changed on the visible page, like Elgato's app does.
+        // Tell plugins about what changed on the visible page, like Elgato's app does. A slot that
+        // changes width reappears, so its plugin learns the new size.
         if visible {
-            for (ctx, (input, a)) in &old {
-                let moved = new.get(ctx).is_none_or(|(i, n)| *i != *input || n.uuid != a.uuid);
-                if moved && self.is_plugin(a) {
+            for (ctx, (input, a, span)) in &old {
+                let moved = new.get(ctx).is_none_or(|(i, n, s)| *i != *input || n.uuid != a.uuid || s != span);
+                if *span > 0 && moved && self.is_plugin(a) {
                     self.send_plugin("willDisappear", a, *input, json!({}));
                 }
             }
@@ -1003,12 +1043,12 @@ impl DeckActor {
         self.save_page(&name);
         self.rebuild_index();
         if visible {
-            for (ctx, (input, a)) in &new {
-                if !self.is_plugin(a) {
+            for (ctx, (input, a, span)) in &new {
+                if *span == 0 || !self.is_plugin(a) {
                     continue;
                 }
                 match old.get(ctx) {
-                    Some((i, o)) if *i == *input && o.uuid == a.uuid => {
+                    Some((i, o, s)) if *i == *input && o.uuid == a.uuid && s == span => {
                         if o.settings != a.settings {
                             self.send_plugin("didReceiveSettings", a, *input, json!({}));
                         }
@@ -1418,7 +1458,7 @@ impl DeckActor {
                 }
             }
             InputId::Dial(d) => {
-                let seg = img.width() as u16;
+                let seg = self.segment_size().map_or(img.width(), |(w, _)| w) as u16;
                 match ImageRect::from_image_async(img) {
                     Ok(rect) => {
                         if let Err(e) = self.deck.write_lcd(d as u16 * seg, 0, &rect).await {
@@ -1433,10 +1473,14 @@ impl DeckActor {
     }
 
     /// Renders one slot of any page as it would appear on the device.
+    /// A dial slot under a wider one has no picture of its own.
     fn render(&self, page: &str, input: InputId) -> Option<DynamicImage> {
+        if self.covered(page, input) {
+            return None;
+        }
         let action = self.slot(page, input).and_then(Slot::display_action);
         if let Some(a) = action.filter(|a| matches!(a.uuid.as_str(), actions::CLOCK | actions::MANGOHUD | actions::MEDIA | actions::AUTOCLICK)) {
-            return self.render_widget(a, input);
+            return self.render_widget(page, a, input);
         }
         if let Some(a) = action.filter(|a| a.uuid == actions::VOLUME) {
             let (icon, name, percent, muted, is_default) = self.volume_view(a);
@@ -1453,10 +1497,9 @@ impl DeckActor {
                     st.labels.insert(LabelPos::Bottom, Label { text, ..Default::default() });
                     Some(self.renderer.render_key(size, Some(&st), flash))
                 }
-                InputId::Dial(_) => {
-                    let (w, h) = self.kind.lcd_strip_size()?;
-                    let seg = (w / self.kind.encoder_count() as usize) as u32;
-                    Some(self.renderer.render_volume(seg, h as u32, &icon, &name, percent, muted, is_default, flash))
+                InputId::Dial(d) => {
+                    let (w, h) = self.dial_size(page, d)?;
+                    Some(self.renderer.render_volume(w, h, &icon, &name, percent, muted, is_default, flash))
                 }
             };
         }
@@ -1467,12 +1510,11 @@ impl DeckActor {
                 let size = self.kind.key_image_format().size.0 as u32;
                 Some(self.renderer.render_key(size, state.as_ref(), flash))
             }
-            InputId::Dial(_) => {
-                let (w, h) = self.kind.lcd_strip_size()?;
-                let seg = (w / self.kind.encoder_count() as usize) as u32;
+            InputId::Dial(d) => {
+                let (seg, h) = self.dial_size(page, d)?;
                 let img = match action.and_then(|a| Some((a, self.host.action(&a.uuid)?))) {
                     // Key-only actions on a dial: show their key picture big, with the title beside it.
-                    Some((_, info)) if !info.encoder => self.renderer.render_dial(seg, h as u32, state.as_ref()),
+                    Some((_, info)) if !info.encoder => self.renderer.render_dial(seg, h, state.as_ref()),
                     Some((a, info)) => {
                         let live = self.live.get(&a.context);
                         let plugin_dir = self.host.plugin(&info.plugin).map(|p| p.dir.clone());
@@ -1513,9 +1555,9 @@ impl DeckActor {
                         }
                         // Bars the plugin never set would otherwise draw as empty tracks.
                         layout.items.retain(|i| !matches!(i.kind, crate::layout::ItemKind::Bar | crate::layout::ItemKind::GBar) || live.is_some_and(|l| l.feedback.contains_key(&i.key)));
-                        self.renderer.render_layout(seg, h as u32, &layout, info.encoder_background.as_deref(), plugin_dir.as_deref(), flash)
+                        self.renderer.render_layout(seg, h, &layout, info.encoder_background.as_deref(), plugin_dir.as_deref(), flash)
                     }
-                    None => self.renderer.render_dial(seg, h as u32, state.as_ref()),
+                    None => self.renderer.render_dial(seg, h, state.as_ref()),
                 };
                 Some(img)
             }

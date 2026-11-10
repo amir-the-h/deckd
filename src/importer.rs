@@ -212,7 +212,7 @@ fn convert_slot(sc: &Value, ctx: &mut Ctx) -> Option<Slot> {
             s.labels.insert(LabelPos::Center, Label { text, size: Some(11.0), ..Default::default() });
         }
     }
-    Some(Slot { actions, display })
+    Some(Slot { actions, display, ..Default::default() })
 }
 
 fn convert_action(a: &Value, ctx: &mut Ctx) -> Option<ActionInstance> {

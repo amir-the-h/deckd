@@ -34,7 +34,8 @@ if let Some(a) = action.filter(|a| a.uuid == actions::MYTHING) {
     if let Some(user) = a.current_state() { st.image = user.image.clone(); st.background = user.background.clone(); }
     return match input {
         InputId::Key(_) => Some(self.renderer.render_key(self.kind.key_image_format().size.0 as u32, Some(&st), None)),
-        InputId::Dial(_) => { let (w, h) = self.kind.lcd_strip_size()?; Some(self.renderer.render_dial((w / self.kind.encoder_count() as usize) as u32, h as u32, Some(&st))) }
+        // dial_size covers every segment of a wide dial slot.
+        InputId::Dial(d) => { let (w, h) = self.dial_size(page, d)?; Some(self.renderer.render_dial(w, h, Some(&st))) }
     };
 }
 ```

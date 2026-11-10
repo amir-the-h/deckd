@@ -71,6 +71,22 @@ pub struct Page {
     pub dials: BTreeMap<u8, Slot>,
 }
 
+impl Page {
+    /// The dial whose slot shows on touch-strip segment `d` of `n`, and how many segments that
+    /// slot covers. A dial slot's `span` takes over the segments (and dials) to its right.
+    pub fn dial_owner(&self, d: u8, n: u8) -> (u8, u8) {
+        let mut i = 0;
+        while i < n {
+            let len = self.dials.get(&i).map_or(1, |s| s.span.clamp(1, n - i));
+            if d < i + len {
+                return (i, len);
+            }
+            i += len;
+        }
+        (d, 1)
+    }
+}
+
 /// Focus rule for automatic page switching. Patterns are case-insensitive
 /// regexes; empty ones are ignored, and all given ones must match.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +120,10 @@ pub struct Slot {
     /// Index into `actions` of the action whose state is drawn.
     #[serde(skip_serializing_if = "is_zero")]
     pub display: usize,
+    /// Dials only: how many touch-strip segments the slot fills, its own included. The dials it
+    /// covers to its right act as part of it, and their own slots are hidden meanwhile.
+    #[serde(skip_serializing_if = "is_single")]
+    pub span: u8,
 }
 
 impl Slot {
@@ -296,6 +316,10 @@ fn is_zero(v: &usize) -> bool {
     *v == 0
 }
 
+fn is_single(v: &u8) -> bool {
+    *v <= 1
+}
+
 pub fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> Result<T> {
     match std::fs::read_to_string(path) {
         Ok(s) => serde_json::from_str(&s).with_context(|| format!("parsing {}", path.display())),
@@ -398,6 +422,18 @@ mod tests {
 
     fn slot(json: &str) -> Slot {
         serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn wide_dial_slots_cover_the_dials_to_their_right() {
+        let page: Page = serde_json::from_str(r#"{"dials": {"0": {"span": 2}, "1": {}, "2": {"span": 9}}}"#).unwrap();
+        let owners: Vec<_> = (0..4).map(|d| page.dial_owner(d, 4)).collect();
+        // Dial 0 takes dial 1's segment; dial 2's span is cut at the strip's end.
+        assert_eq!(owners, [(0, 2), (0, 2), (2, 2), (2, 2)]);
+        // A plain page is one segment per dial, and a single span isn't written out.
+        let plain = Page::default();
+        assert_eq!(plain.dial_owner(3, 4), (3, 1));
+        assert!(!serde_json::to_string(&slot(r#"{"span": 1}"#)).unwrap().contains("span"));
     }
 
     #[test]

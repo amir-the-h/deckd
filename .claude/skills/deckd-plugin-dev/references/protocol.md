@@ -46,10 +46,18 @@ Common envelope for action events:
     "coordinates": { "column": 2, "row": 1 },   // dials: { "column": <dial index>, "row": 0 }
     "controller": "Keypad",              // or "Encoder"
     "state": 0,
-    "isInMultiAction": false
+    "isInMultiAction": false,
+    "span": 1                            // dials only, deckd-only: touch-strip segments the slot fills
   }
 }
 ```
+
+**Wide dial slots (deckd only).** A dial slot can be set to fill 1–4 touch-strip segments in the
+UI (`"span"` in the page file). Every event for a dial action carries `payload.span`; a slot whose
+width changes gets `willDisappear` and then `willAppear` with the new value. Draw `200 × span` by
+100 pixels to use the room. Images and layouts made for one segment are stretched to the wider
+area. The covered dials turn, push and tap for the wide slot; `tapPos` is relative to its left edge.
+Elgato's software never sends `span`, so treat a missing value as 1.
 
 | Event | When | Extra payload |
 |---|---|---|
@@ -59,7 +67,7 @@ Common envelope for action events:
 | `dialDown` / `dialUp` | dial pushed/released | — |
 | `dialPress` | legacy (pre-6.1) twin of dialDown/dialUp; ignore it if you handle those | `pressed: bool` |
 | `dialRotate` | dial turned | `ticks` (signed), `pressed` (held while turning) |
-| `touchTap` | touch strip tapped over this dial's segment | `tapPos: [x, y]` (segment-local), `hold: bool` (long press) |
+| `touchTap` | touch strip tapped over this dial's segment | `tapPos: [x, y]` (relative to the slot's left edge), `hold: bool` (long press) |
 | `didReceiveSettings` | reply to `getSettings`; after the settings panel saves; after a UI edit changes settings | `settings` |
 | `didReceiveGlobalSettings` | reply to `getGlobalSettings`; after the settings panel saves globals | `settings` |
 | `sendToPlugin` | your settings panel sent data | arbitrary `payload` |
@@ -70,7 +78,7 @@ Common envelope for action events:
 | Event | Effect in deckd |
 |---|---|
 | `setTitle` `{title, state?, target?}` | Overrides the title (not persisted). `null` restores the configured title; `""` hides it. `\n` makes multiple lines. Without `state`, applies to all states. `target` is ignored. |
-| `setImage` `{image, state?}` | Data URI (`data:image/png;base64,...`, `data:image/svg+xml;base64,...`, `data:image/svg+xml,<svg...>`). Empty/null resets. On a dial it sets the layout's `icon`; an image at least 1.5× wider than tall is drawn full-segment. |
+| `setImage` `{image, state?}` | Data URI (`data:image/png;base64,...`, `data:image/svg+xml;base64,...`, `data:image/svg+xml,<svg...>`). Empty/null resets. On a dial it sets the layout's `icon`; an image at least 1.5× wider than tall is drawn full-segment (over every segment of a wide slot). |
 | `setState` `{state}` | Switches to that manifest state (persisted). |
 | `setFeedback` `{key: value \| {value, color, opacity, enabled, ...}}` | Updates touch-strip layout items. Bars take numbers (`range` default 0–100). |
 | `setFeedbackLayout` `{layout}` | `$X1`, `$A0`, `$A1`, `$B1`, `$B2`, `$C1`, a layout JSON path relative to the plugin, or an inline layout object. Clears previous feedback. |
