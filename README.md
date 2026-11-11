@@ -19,15 +19,17 @@ app.
   and `.streamDeckIconPack`s), and plugin install/removal.
 - **Built-in actions** that need no plugin process: switch page, run command,
   dial commands, brightness, audio volume (PulseAudio/PipeWire), clock,
-  now-playing and media keys (MPRIS), MangoHud stats and an auto-clicker.
+  now-playing and media keys (MPRIS), MangoHud stats, an auto-clicker and a
+  game speed dial (turn through a game's speed hotkeys, push to pause).
 - **Several actions per key or dial**, each bound to any mix of press, tap,
   double tap, hold, long press, turn (either way, left or right), touch and
   long touch. An action with nothing picked gets whatever the others don't use.
 - **Wide dial slots**: a dial's slot can fill two to four touch-strip
   segments, with the dials it covers working for it. Plugins are told the width
   (`span`) so they can draw that wide.
-- **Automatic page switching** by focused window (class, title or "any Steam
-  game") on Hyprland.
+- **Automatic page switching** by focused window (class, title, any game, or
+  particular Steam games picked from your libraries) on Hyprland. A page for
+  particular games wins over a page for any game.
 - **StreamController import**: `deckd import-streamcontroller` converts your
   pages.
 
@@ -55,7 +57,7 @@ binaries for x86_64 and aarch64 (glibc 2.35 or newer); each tarball holds
 cargo build --release
 install -Dm755 target/release/deckd ~/.local/bin/deckd
 
-# Let your user open the deck (and /dev/uinput, for auto-click and the MangoHud key fallback) without root
+# Let your user open the deck (and /dev/uinput, for auto-click, game speed and the MangoHud key fallback) without root
 sudo install -m644 dist/70-deckd.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
 
