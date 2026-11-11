@@ -99,6 +99,8 @@ pub struct DeckActor {
     regexes: HashMap<String, Option<regex::Regex>>,
     /// Running auto-clickers by context, with the button they click.
     clickers: HashMap<String, (tokio::task::JoinHandle<()>, u16)>,
+    /// Game speed dials' current speed, by context.
+    speeds: HashMap<String, crate::gamespeed::Speed>,
     tx: mpsc::UnboundedSender<Event>,
 }
 
@@ -201,6 +203,7 @@ impl DeckActor {
             auto_return: None,
             regexes: HashMap::new(),
             clickers: HashMap::new(),
+            speeds: HashMap::new(),
             tx,
         };
         actor.rebuild_index();
@@ -550,6 +553,26 @@ impl DeckActor {
                     InputId::Dial(_) => (seg_w > 0).then(|| self.renderer.render_dial(seg_w, seg_h, Some(&st))),
                 }
             }
+            actions::GAMESPEED => {
+                let speed = self.speeds.get(&a.context).cloned().unwrap_or_else(|| crate::gamespeed::initial(&a.settings));
+                let mut st = State {
+                    image: user.image.clone().or_else(|| Some(icon_uri(if speed.paused { crate::gamespeed::PAUSED_ICON } else { crate::gamespeed::ICON }))),
+                    background: user.background.clone(),
+                    labels: user.labels.clone(),
+                    ..Default::default()
+                };
+                if st.labels.values().all(|l| l.text.is_empty()) {
+                    let status = crate::gamespeed::status(&a.settings, &speed);
+                    let c = if speed.paused { color("paused_color", "#f7821b") } else { color("speed_color", "#ffffff") };
+                    if matches!(input, InputId::Dial(_)) {
+                        st.labels.insert(LabelPos::Top, styled(LabelPos::Top, "Game speed".into(), 10.0, &color("label_color", "#9a9a9a")));
+                        st.labels.insert(LabelPos::Center, styled(LabelPos::Center, status, 16.0, &c));
+                    } else {
+                        st.labels.insert(LabelPos::Bottom, styled(LabelPos::Bottom, status, 12.0, &c));
+                    }
+                }
+                draw(&st)
+            }
             _ => None,
         }
     }
@@ -690,6 +713,8 @@ impl DeckActor {
                 self.widget_fire(action, fire);
             } else if action.uuid == actions::MEDIA_KEY {
                 self.media_key_fire(action, fire);
+            } else if action.uuid == actions::GAMESPEED {
+                effects.push(Effect::GameSpeed(action.context.clone(), action.settings.clone(), fire));
             } else if action.uuid == actions::AUTOCLICK {
                 if matches!(fire, Fire::Press | Fire::Touch) {
                     effects.push(Effect::ToggleAutoClick(action.context.clone()));
@@ -1170,6 +1195,14 @@ impl DeckActor {
                 self.brightness = (self.brightness as i32 + delta).clamp(0, 100) as u8;
                 let _ = self.deck.set_brightness(self.brightness).await;
             }
+            Effect::GameSpeed(ctx, settings, fire) => {
+                let st = self.speeds.entry(ctx.clone()).or_insert_with(|| crate::gamespeed::initial(&settings));
+                let keys = crate::gamespeed::step(&settings, st, fire);
+                if !keys.is_empty() {
+                    tokio::task::spawn_blocking(move || crate::gamespeed::press(&keys));
+                }
+                self.mark_ctx(&ctx);
+            }
             Effect::ToggleAutoClick(ctx) => {
                 if self.clicker_running(&ctx) {
                     self.stop_clicker(&ctx);
@@ -1261,15 +1294,18 @@ impl DeckActor {
         re.as_ref().is_some_and(|r| r.is_match(text))
     }
 
-    /// The first page (by name) whose focus rule matches the window.
+    /// The first page (by name) whose focus rule matches the window. Rules naming specific
+    /// Steam games are tried first, so a game's own page beats a catch-all games page.
     fn page_for_focus(&mut self, f: &crate::focus::Focus) -> Option<String> {
-        let rules: Vec<(String, config::AutoSwitch)> =
+        let mut rules: Vec<(String, config::AutoSwitch)> =
             self.cfg.pages.iter().filter_map(|(n, p)| Some((n.clone(), p.auto.clone()?))).filter(|(_, a)| a.enabled).collect();
+        rules.sort_by_key(|(_, r)| r.steam_apps.is_empty());
         for (name, rule) in rules {
-            if rule.class.is_empty() && rule.title.is_empty() && !rule.game {
+            if rule.class.is_empty() && rule.title.is_empty() && !rule.game && rule.steam_apps.is_empty() {
                 continue;
             }
-            let game_ok = !rule.game || f.game;
+            let app_ok = rule.steam_apps.is_empty() || f.steam_app.is_some_and(|a| rule.steam_apps.contains(&a));
+            let game_ok = app_ok && (!rule.game || f.game);
             let class_ok = rule.class.is_empty() || self.pattern_matches(&rule.class, &f.class);
             let title_ok = rule.title.is_empty() || self.pattern_matches(&rule.title, &f.title);
             if game_ok && class_ok && title_ok {
@@ -1479,7 +1515,7 @@ impl DeckActor {
             return None;
         }
         let action = self.slot(page, input).and_then(Slot::display_action);
-        if let Some(a) = action.filter(|a| matches!(a.uuid.as_str(), actions::CLOCK | actions::MANGOHUD | actions::MEDIA | actions::AUTOCLICK)) {
+        if let Some(a) = action.filter(|a| matches!(a.uuid.as_str(), actions::CLOCK | actions::MANGOHUD | actions::MEDIA | actions::AUTOCLICK | actions::GAMESPEED)) {
             return self.render_widget(page, a, input);
         }
         if let Some(a) = action.filter(|a| a.uuid == actions::VOLUME) {

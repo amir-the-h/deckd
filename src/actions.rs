@@ -16,6 +16,8 @@ pub const MEDIA: &str = "deckd.media";
 pub const MEDIA_KEY: &str = "deckd.mediakey";
 /// Clicks the mouse until pressed again; handled by the device actor.
 pub const AUTOCLICK: &str = "deckd.autoclick";
+/// Steps a game's speed keys and pauses it; handled by the device actor, which keeps the speed.
+pub const GAMESPEED: &str = "deckd.gamespeed";
 
 pub fn is_builtin(uuid: &str) -> bool {
     uuid.starts_with("deckd.")
@@ -29,6 +31,8 @@ pub enum Effect {
     Brightness { delta: i32 },
     /// Starts or stops the auto-clicker with this context.
     ToggleAutoClick(String),
+    /// Changes a game speed dial's speed (context, settings, input).
+    GameSpeed(String, Value, Fire),
 }
 
 /// What happened to the input the action is bound to.

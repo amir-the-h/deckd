@@ -77,6 +77,37 @@ static KEYBOARD: OnceLock<Mutex<Option<File>>> = OnceLock::new();
 /// Holds `codes` down together for `hold`, then releases them in reverse order.
 /// Blocking; the focused window receives the keys.
 pub fn chord(codes: &[u16], hold: Duration) -> Result<()> {
+    chord_then(codes, hold, Duration::ZERO)
+}
+
+/// A short key press for games, which read keys once a frame: held long enough to be
+/// seen, then the keyboard stays idle a moment so back-to-back taps register apart.
+pub fn tap(codes: &[u16]) -> Result<()> {
+    chord_then(codes, Duration::from_millis(50), Duration::from_millis(50))
+}
+
+/// Parses a key or chord such as `space`, `3`, `shift+1` or `ctrl+kp_add`.
+pub fn parse_chord(spec: &str) -> Option<Vec<u16>> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return None;
+    }
+    // A lone "+" (or one ending a chord, as in "shift++") is the key itself.
+    let (mods, last) = match spec.strip_suffix("++") {
+        Some(m) => (m, "+"),
+        None if spec == "+" => ("", "+"),
+        None => spec.rsplit_once('+').unwrap_or(("", spec)),
+    };
+    let mut codes: Vec<u16> = mods.split('+').filter(|m| !m.trim().is_empty()).map(key_code).collect::<Option<_>>()?;
+    match last.trim() {
+        // US layout: "+" is shift and "=".
+        "+" | "plus" => codes.extend([42, 13]),
+        k => codes.push(key_code(k)?),
+    }
+    Some(codes)
+}
+
+fn chord_then(codes: &[u16], hold: Duration, gap: Duration) -> Result<()> {
     let mut guard = KEYBOARD.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         // KEY_ESC..=KEY_MICMUTE: a full keyboard, so libinput treats it as one.
@@ -93,6 +124,9 @@ pub fn chord(codes: &[u16], hold: Duration) -> Result<()> {
     // Release even after a failed press, so nothing is left held down.
     for &c in codes.iter().rev() {
         let _ = send(f, c, false);
+    }
+    if !gap.is_zero() {
+        std::thread::sleep(gap);
     }
     pressed.context("write to /dev/uinput")
 }
@@ -116,6 +150,17 @@ pub fn key_code(name: &str) -> Option<u16> {
             b'a'..=b'z' => Some(LETTERS[(c - b'a') as usize]),
             b'1'..=b'9' => Some((c - b'1') as u16 + 2),
             b'0' => Some(11),
+            b'-' => Some(12),
+            b'=' => Some(13),
+            b'[' => Some(26),
+            b']' => Some(27),
+            b';' => Some(39),
+            b'\'' => Some(40),
+            b'`' => Some(41),
+            b'\\' => Some(43),
+            b',' => Some(51),
+            b'.' => Some(52),
+            b'/' => Some(53),
             _ => None,
         };
     }
@@ -125,22 +170,22 @@ pub fn key_code(name: &str) -> Option<u16> {
         }
     }
     Some(match n.as_str() {
-        "shift_l" => 42,
+        "shift_l" | "shift" => 42,
         "shift_r" => 54,
-        "control_l" => 29,
+        "control_l" | "ctrl" | "control" => 29,
         "control_r" => 97,
-        "alt_l" | "meta_l" => 56,
+        "alt_l" | "meta_l" | "alt" => 56,
         "alt_r" | "meta_r" | "iso_level3_shift" => 100,
-        "super_l" => 125,
+        "super_l" | "super" => 125,
         "super_r" => 126,
-        "escape" => 1,
+        "escape" | "esc" => 1,
         "minus" => 12,
         "equal" => 13,
         "backspace" => 14,
         "tab" => 15,
         "bracketleft" => 26,
         "bracketright" => 27,
-        "return" => 28,
+        "return" | "enter" => 28,
         "semicolon" => 39,
         "apostrophe" => 40,
         "grave" => 41,
@@ -161,12 +206,12 @@ pub fn key_code(name: &str) -> Option<u16> {
         "print" | "sys_req" => 99,
         "home" => 102,
         "up" => 103,
-        "prior" | "page_up" => 104,
+        "prior" | "page_up" | "pgup" => 104,
         "left" => 105,
         "right" => 106,
         "end" => 107,
         "down" => 108,
-        "next" | "page_down" => 109,
+        "next" | "page_down" | "pgdn" => 109,
         "insert" => 110,
         "delete" => 111,
         "pause" | "break" => 119,
@@ -191,5 +236,19 @@ mod tests {
         assert_eq!(key_code("KP_0"), Some(82));
         assert_eq!(key_code("Pause"), Some(119));
         assert_eq!(key_code("nope"), None);
+        assert_eq!(key_code("-"), Some(12));
+    }
+
+    #[test]
+    fn chords() {
+        use super::parse_chord;
+        assert_eq!(parse_chord("space"), Some(vec![57]));
+        assert_eq!(parse_chord("Shift+1"), Some(vec![42, 2]));
+        assert_eq!(parse_chord("ctrl + kp_add"), Some(vec![29, 78]));
+        assert_eq!(parse_chord("+"), Some(vec![42, 13]));
+        assert_eq!(parse_chord("ctrl++"), Some(vec![29, 42, 13]));
+        assert_eq!(parse_chord("-"), Some(vec![12]));
+        assert_eq!(parse_chord(""), None);
+        assert_eq!(parse_chord("shift+nope"), None);
     }
 }

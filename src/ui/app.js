@@ -286,6 +286,32 @@ function renderPageSettings() {
   back.addEventListener("change", () => setRule({ stay: !back.checked }));
   steam.addEventListener("change", () => setRule({ game: steam.checked, steam_game: undefined }));
 
+  // Steam games this page is for: chips with a remove button, plus a picker of installed games.
+  const games = el("div", { class: "row", style: "flex-wrap:wrap;justify-content:flex-start;gap:6px" });
+  const addGame = el("select", { style: "flex:none" }, el("option", { value: "" }, "Add a game…"));
+  const gameName = (id) => S.steamGames?.find((g) => g.id === id)?.name || `App ${id}`;
+  const drawGames = () => {
+    const ids = pageObj()?.auto?.steam_apps || [];
+    games.innerHTML = "";
+    if (!ids.length) games.append(el("span", { class: "muted" }, "Any game"));
+    for (const id of ids) {
+      games.append(el("button", {
+        class: "chip on", title: `Steam app ${id}; click to remove`,
+        onclick: () => { const left = ids.filter((x) => x !== id); setRule({ steam_apps: left.length ? left : undefined }); drawGames(); },
+      }, `${gameName(id)} ×`));
+    }
+    addGame.length = 1;
+    for (const g of S.steamGames || []) if (!ids.includes(g.id)) addGame.append(el("option", { value: g.id }, g.name));
+  };
+  addGame.addEventListener("change", () => {
+    const id = Number(addGame.value);
+    if (!id) return;
+    setRule({ steam_apps: [...(pageObj()?.auto?.steam_apps || []), id] });
+    drawGames();
+  });
+  drawGames();
+  if (!S.steamGames) api("GET", "/api/steam/games").then((g) => { S.steamGames = g; drawGames(); }).catch(() => {});
+
   const list = el("div", { class: "window-list hidden" });
   const pick = el("button", { class: "btn small", style: "flex:none" }, "Pick from open windows…");
   pick.addEventListener("click", async () => {
@@ -306,6 +332,8 @@ function renderPageSettings() {
     list,
     field("Window title", title),
     el("label", { class: "row", style: "justify-content:flex-start;gap:8px" }, steam, el("span", { style: "flex:none" }, "Only games started by a launcher: Steam, Epic, Heroic, Lutris (any window class; leave the patterns empty to match every game)")),
+    field("Steam games", el("div", { class: "stack" }, games, addGame)),
+    el("p", { class: "muted" }, "Pick games to give them their own page. A page for specific games wins over a page for any game."),
     el("label", { class: "row", style: "justify-content:flex-start;gap:8px" }, back, el("span", { style: "flex:none" }, "Go back to the previous page when the app loses focus")),
     el("p", { class: "muted" }, "Patterns are case-insensitive regular expressions; a plain word matches anywhere in the name. Changing pages by hand while on an auto page cancels the automatic return."));
   box.append(
@@ -868,6 +896,22 @@ function renderSettings(box, keepPI) {
       field("Clicks", settingInput(a, "count", { type: "number", min: 0, placeholder: "until stopped" }))));
     box.append(colorRow(a, [["on_color", "While clicking", "#1e6b34"]]));
     box.append(el("p", { class: "muted" }, "Press to start clicking wherever the pointer is; press again to stop. Changes apply the next time it starts. Needs write access to /dev/uinput (see deckd's udev rules)."));
+  } else if (a.uuid === "deckd.gamespeed") {
+    const step = a.settings?.mode === "step";
+    box.append(field("The game has", settingSelect(a, "mode", [["levels", "A key for each speed (1, 2, 3…)"], ["step", "Faster and slower keys"]], () => { renderInspector(); refreshSlot(S.sel); })));
+    if (step) {
+      box.append(el("div", { class: "row" },
+        field("Faster", settingInput(a, "faster", { placeholder: "plus" })),
+        field("Slower", settingInput(a, "slower", { placeholder: "-" }))));
+    } else {
+      box.append(field("Speed keys, slowest first", settingInput(a, "speeds", { placeholder: "1, 2, 3" })));
+      box.append(el("div", { class: "row" },
+        field("Names (optional)", settingInput(a, "names", { placeholder: "e.g. 1×, 2×, 5×" })),
+        field("Starts at", settingInput(a, "start", { type: "number", min: 1, placeholder: "1" }))));
+    }
+    box.append(field("Pause", settingInput(a, "pause", { placeholder: "space" })));
+    box.append(colorRow(a, [["speed_color", "Speed", "#ffffff"], ["paused_color", "“Paused”", "#f7821b"], ["label_color", "“Game speed”", "#9a9a9a"]]));
+    box.append(el("p", { class: "muted" }, "Turn to change speed, push or tap to pause. Keys are names like space, 3, kp_add, minus, or chords like shift+1. The game doesn't report its speed, so pausing or changing it from the keyboard can leave the display out of step until the next turn. Needs write access to /dev/uinput (see deckd's udev rules)."));
   } else if (meta.inspector) {
     const holder = el("div");
     box.append(holder);

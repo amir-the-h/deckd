@@ -118,6 +118,7 @@ fn auto_switch(v: Option<&Value>) -> Option<config::AutoSwitch> {
         class: s("wm_class"),
         title: s("title"),
         game: false,
+        steam_apps: Vec::new(),
         stay: false,
     };
     (!rule.class.is_empty() || !rule.title.is_empty()).then_some(rule)

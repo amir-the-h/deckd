@@ -46,6 +46,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/store/sources", post(add_source).delete(remove_source))
         .route("/api/audio", get(audio_devices))
         .route("/api/windows", get(list_windows))
+        .route("/api/steam/games", get(steam_games))
         .route("/api/icons", get(list_icons).post(upload_icon).layer(axum::extract::DefaultBodyLimit::max(8 << 20)))
         .route("/api/events", get(events))
         .route("/api/iconsets", get(list_iconsets))
@@ -189,6 +190,8 @@ fn builtins() -> Vec<Value> {
                 "icon": icon("M20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12 20 8.69zM12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12z") }),
         json!({ "uuid": "deckd.autoclick", "name": "Auto-click", "tooltip": "Click the mouse repeatedly until pressed again", "keypad": true, "encoder": true,
                 "icon": icon(crate::autoclick::ICON) }),
+        json!({ "uuid": "deckd.gamespeed", "name": "Game Speed", "tooltip": "Turn to change a game's speed with its hotkeys; push to pause", "keypad": true, "encoder": true,
+                "icon": icon(crate::gamespeed::ICON) }),
     ]
 }
 
@@ -413,6 +416,11 @@ async fn glyph(Query(q): Query<GlyphQuery>) -> ApiResult<Response> {
 
 async fn list_windows() -> Json<Value> {
     let list: Vec<Value> = crate::focus::windows().await.into_iter().map(|(class, title)| json!({ "class": class, "title": title })).collect();
+    Json(json!(list))
+}
+
+async fn steam_games() -> Json<Value> {
+    let list: Vec<Value> = crate::steam::installed_games().await.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect();
     Json(json!(list))
 }
 
